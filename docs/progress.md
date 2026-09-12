@@ -1,5 +1,30 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（Phase 7：T023–T024 + SC-003 达成，一键环境可演示）
+
+**背景**：Phase 6 完成（US4 模型列表，32 passed），Docker 三容器健康，.env 含真实 SenseAudio 渠道 key。从 T023 进入 US5 一键环境（P3）。
+
+**做了什么**：
+
+1. 关键前置发现：原镜像（build context=backend/）只含 app/，无 alembic.ini/alembic//scripts/seed.py——启动 3 个必需文件都不在镜像里；且 context 限于 backend/ 够不到仓库根 scripts/seed.py。故 T023 实施「路线 B 变体」：
+   - 新建根 `.dockerignore`（挡 `.env` 真实 key/`.git`/`.venv`/`node_modules` 等，扩 context 后密钥红线与体积双保障；构建 context 255KB）
+   - `docker-compose.yml`：api `build` 改 `context: .` + `dockerfile: backend/Dockerfile`；`command` 改 shell 串 `alembic upgrade head && PYTHONPATH=/app python scripts/seed.py && exec uvicorn`
+   - `backend/Dockerfile`：COPY 路径加 backend/ 前缀 + 实际 COPY alembic.ini / alembic / scripts/seed.py（镜像自包含）；CMD 保持 uvicorn（含 uv run，compose 已覆盖）
+   - seed.py 零改动：容器内 project root=/app，其 `parents[1]+/backend` 相对定位失效但 sys.path 插入不存在路径无害，PYTHONPATH=/app 接管 import app
+2. T024 双场景验收（dev-verify 证据留证）：
+   - 单容器重建（`up -d --build api` 不动 pg）：日志 `[seed] ensured channel=deepseek-main models=['deepseek-v4-flash-0731','senseaudio-s2']`（幂等，无 Running upgrade 输出=已在 head）+ uvicorn 8000 → /docs 200
+   - 全链路空库（`down -v` 清卷 → `up -d --build`）：api 日志 **`Running upgrade -> d36075ae03bd, T006 initial 7 tables`** + seed 插入 → /docs 200；重复 `up -d` 三容器 Running（零重建、种子零重复执行，幂等成立）→ GET /v1/models 200（object=list，data[]=deepseek-v4-flash-0731/senseaudio-s2，created=0/owned_by=onehub）
+
+**验证（dev-verify 证据）**：
+
+- 上述命令输出：`docker compose up -d --build api` 重建成功（依赖层缓存命中）→ logs 见 seed 幂等 + /docs **200**
+- `docker compose down -v && up -d --build` → logs 见 `Running upgrade -> d36075ae03bd` + `[seed] ensured ...` + /docs **200**；重复 `up` 零操作；GET /v1/models **200** 两模型 ID
+- `uv run pytest -q` → **32 passed**（基线保持，conftest 指向 onehub_test 库不受 down -v 影响）
+- git log：`7ac8fdc`(feat docker T023) 接续 Phase 6 `df74365`
+- 决策落盘：task_plan.md 关键决策记录 +1（Phase 7 执行期设计：扩 context + .dockerignore + command shell 串，seed 零改动）
+
+**下一步**：Phase 8 T025（JS SDK 验收脚本 verify.mjs 五断言，P 可与 Phase 5 后独立写）→ T026（全链路验收 SC-001/002/004/005 终判）→ T027（W1 收尾文档 + teach 检查点）。
+
 ## 会话 2026-09-12（Phase 6：T021–T022 + US4 达成，模型列表可演示）
 
 **背景**：Phase 5 完成（US3 流式 usage，30 passed），Docker 三容器健康，.env 含真实 SenseAudio 渠道 key。从 T021 进入 US4 模型列表（仅依赖 Phase 2）。
