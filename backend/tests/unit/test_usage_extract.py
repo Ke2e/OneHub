@@ -53,7 +53,12 @@ def test_delta_accumulation_untouched():
     for event in DELTA_EVENTS:
         out.extend(tracker.feed(event))
     out.extend(tracker.finish())
-    content = "".join(e["choices"][0]["delta"].get("content") or "" for e in out)
+    # 仅累计带 delta 的 chunk（合成 usage 兜底事件 choices 为空，OpenAI 语义）
+    content = "".join(
+        e["choices"][0]["delta"].get("content") or ""
+        for e in out
+        if e.get("choices")
+    )
     assert content == "你好，世界"
 
 

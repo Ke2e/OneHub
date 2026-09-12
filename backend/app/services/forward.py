@@ -85,3 +85,59 @@ async def sse_events(lines: AsyncIterator[str]) -> AsyncIterator[dict[str, Any]]
             return
     for event in parser.finish():
         yield event
+
+
+class UsageTracker:
+    """流式 usage 提取（T019，保护清单手写）：在事件级纯透传之上加用量语义。
+
+    - 上游 chunk 自带 usage（include_usage 注入生效）：原样透传该事件，提取 usage 值
+    - 上游未返 usage（渠道不支持/注入未生效/EOF 截断）：流收敛时合成一个
+      usage=0 的兜底 chunk 事件——调用方零配置总能拿到 usage 对象（contracts
+      「最后一个数据 chunk 携带 usage」「上游异常未返 usage：缺省 0，不报错」）
+    - 合成事件位次：finish() 产出 → 位于流的最后一个（gateway 层 [DONE] 之前）
+    """
+
+    def __init__(self) -> None:
+        self.usage: dict[str, int] | None = None  # 提取结果；None = 上游未返
+        self._sample: dict[str, Any] = {}  # 首个 chunk 的 id/created/model 采样
+
+    def feed(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """喂入一个事件：原样透传（[event]），同时采样与提取 usage。"""
+        if isinstance(event, dict):
+            if event.get("usage"):
+                self.usage = event["usage"]
+            elif not self._sample and event.get("id"):
+                # 合成兜底事件需要与流同源的 id/created/model（OpenAI chunk 结构）
+                self._sample = {
+                    "id": event.get("id", ""),
+                    "created": event.get("created", 0),
+                    "model": event.get("model", ""),
+                }
+        return [event]
+
+    def finish(self) -> list[dict[str, Any]]:
+        """流收敛：未提取到 usage → 合成 usage=0 兜底事件（choices 空，OpenAI 语义）。"""
+        if self.usage is not None:
+            return []
+        return [
+            {
+                **self._sample,
+                "object": "chat.completion.chunk",
+                "choices": [],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+        ]
+
+
+async def with_usage(events: AsyncIterator[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+    """异步适配：事件 dict 流（sse_events 产出）→ 增量透传 + 流尾 usage 兜底。
+
+    上游已返 usage：逐事件原样透传，不做追加；未返：最后一个产出为合成 usage=0
+    事件（调用方在末尾 chunk 总能看到 usage，SC-002 形式保证）。
+    """
+    tracker = UsageTracker()
+    async for event in events:
+        for out in tracker.feed(event):
+            yield out
+    for out in tracker.finish():
+        yield out

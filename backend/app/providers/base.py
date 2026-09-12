@@ -21,7 +21,7 @@ from app.core.errors import (
     UpstreamError,
 )
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
-from app.services.forward import sse_events
+from app.services.forward import sse_events, with_usage
 
 # 上游请求默认超时：connect 隔离握手，read 兜底慢响应（SC-004「不挂死等待」）
 _DEFAULT_TIMEOUT = httpx.Timeout(timeout=60.0, connect=10.0)
@@ -140,9 +140,11 @@ class BaseProvider(ABC):
     ) -> AsyncIterator[dict[str, Any]]:
         """流式：httpx stream() + aiter_lines() → SSE 解析器逐事件产出（US2 主路径）。
 
-        链路（T016）：POST /chat/completions（stream=true 载荷已注入 include_usage）
+        链路（T016+T019）：POST /chat/completions（stream=true 载荷已注入 include_usage）
         → 状态码检查（非 2xx 复用 _map_upstream_error 错误映射）
-        → sse_events() 增量产出事件 dict；[DONE]/上游中断均自然收敛，不挂死调用方。
+        → sse_events() 增量产出事件 dict → with_usage() 透传 + 流尾 usage 兜底
+        （上游已返 usage 原样透传；未返合成 usage=0 事件。调用方零配置总有末尾 usage）。
+        [DONE]/上游中断均自然收敛，不挂死调用方。
         调用方断连：async with 退出关闭上游连接，终止上游消费（T016「断开检测终止上游」）。
         """
         payload = self._build_payload(request)
@@ -152,7 +154,7 @@ class BaseProvider(ABC):
             ) as resp:
                 if resp.is_error:
                     raise self._map_upstream_error(resp.status_code)
-                async for chunk in sse_events(resp.aiter_lines()):
+                async for chunk in with_usage(sse_events(resp.aiter_lines())):
                     yield chunk
         except httpx.TimeoutException as exc:
             raise UpstreamError(
