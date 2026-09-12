@@ -1,0 +1,86 @@
+"""T007 种子脚本：注入 W1 最小渠道与模型集，支持重复执行（幂等 upsert）。
+
+数据依据（data-model.md / PROJECT_CONTEXT 第 5 节）：
+- channels 1 行 deepseek-main，api_key_encrypted 占位 `env-injected`（D2：真实密钥运行期 env 注入）
+- models 2 行 deepseek-chat / deepseek-reasoner，均挂 deepseek-main
+
+DDL 中 channels.name / models.model_name 均无唯一约束，故不用 ON CONFLICT；
+改为"查重 → 无则插入，有则同步核心字段"，事务内完成，重复执行零副作用。
+
+用法：`uv run python scripts/seed.py`（URL 走 app.core.config Settings，环境变量优先）
+"""
+
+import asyncio
+import sys
+from pathlib import Path
+
+# 脚本位于仓库根 scripts/ 下，需将 backend 加入 sys.path 才能导入 app.*
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+from app.core.config import get_settings
+from app.models import Channel, Model
+
+CHANNEL = {
+    "name": "deepseek-main",
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "api_key_encrypted": "env-injected",
+    "weight": 10,
+}
+
+MODELS = [
+    {"model_name": "deepseek-chat", "channel_id": None},
+    {"model_name": "deepseek-reasoner", "channel_id": None},
+]
+
+
+async def _upsert_channel(session: AsyncSession) -> None:
+    """按 name 查重插入/同步渠道；同行已存在则刷新核心字段。"""
+    existing = (
+        await session.execute(select(Channel).where(Channel.name == CHANNEL["name"]))
+    ).scalar_one_or_none()
+    if existing is None:
+        session.add(Channel(**CHANNEL))
+        await session.flush()
+    else:
+        for field, value in CHANNEL.items():
+            if field != "name":
+                setattr(existing, field, value)
+
+
+async def _upsert_models(session: AsyncSession, channel_id: int) -> None:
+    """按 model_name 查重：无则插入并挂渠道，有则仅同步 channel_id。"""
+    existing = {
+        m.model_name: m
+        for m in (await session.execute(select(Model))).scalars().all()
+    }
+    for m in MODELS:
+        if m["model_name"] not in existing:
+            session.add(Model(model_name=m["model_name"], channel_id=channel_id))
+        else:
+            existing[m["model_name"]].channel_id = channel_id
+
+
+async def seed() -> None:
+    """幂等种子：重复执行后渠道/模型仍是各自唯一一份。"""
+    engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
+    try:
+        async with AsyncSession(engine) as session:
+            await _upsert_channel(session)
+            # flush 后 channel.id 已生成
+            channel_id = (
+                await session.execute(select(Channel).where(Channel.name == CHANNEL["name"]))
+            ).scalar_one().id
+            await _upsert_models(session, channel_id)
+            await session.commit()
+            print(f"[seed] ensured channel={CHANNEL['name']} models="
+                  f"{[m['model_name'] for m in MODELS]}")
+    finally:
+        await engine.dispose()
+
+
+if __name__ == "__main__":
+    asyncio.run(seed())
