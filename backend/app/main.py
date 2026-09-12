@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import get_settings
+from app.core.errors import register_error_handlers
 
 
 @asynccontextmanager
@@ -36,6 +37,8 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         lifespan=lifespan,
     )
+    # T008：统一错误出口——所有非 2xx 重塑为 OpenAI 错误结构（SC-004）
+    register_error_handlers(app)
     return app
 
 
