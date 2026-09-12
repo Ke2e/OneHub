@@ -4,6 +4,10 @@
 与现有单测"mock 外部依赖"风格一致（T014 用 MockTransport mock 网络），
 最简且离线可复跑。桩模拟 DB 层 `WHERE enabled` 过滤语义，端点逻辑完整覆盖。
 
+W2 任务 2 迁移后：网关面鉴权走 api_keys 表（哈希校验），桩预置
+ApiKey(key_hash=SHA256("test-gateway-key"))，security 与 gateway 两模块的
+AsyncSession 指向同一桩（依赖与端点查询同库）。
+
 数据用种子形态（Phase 3 后 id 为 SenseAudio 实际可用模型）：
 - 2 个 enabled：deepseek-v4-flash-0731 / senseaudio-s2
 - 1 个 disabled：验证"未启用不出现"（US4 验收语义）
@@ -15,57 +19,38 @@ GET /v1/models 节对齐）。鉴权（contracts「全部网关面端点」）�
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.v1 import gateway as gateway_module
+import app.api.v1.gateway as gateway_module
+import app.core.security as security_module
 from app.main import create_app
-from app.models import Model
+from app.models import ApiKey, Model
+from app.services.keys import hash_sk_key
+from tests._fake_db import FakeSession
 
-
-class _FakeScalars:
-    """模拟 AsyncScalarResult：仅支持 .all()。"""
-
-    def __init__(self, rows):
-        self._rows = rows
-
-    def all(self):
-        return self._rows
-
-
-class _FakeSession:
-    """离线桩：async with 上下文 + scalars() 模拟 DB 层 enabled 过滤。
-
-    真实端点构造 `AsyncSession(request.app.state.engine)` 并执行
-    `select(Model).where(Model.enabled.is_(True))`——桩在 db 层过滤后返回，
-    让"未启用不出现"语义可在单测断言（过滤本身属 where 语义，真机验收兜底）。
-    """
-
-    def __init__(self, rows):
-        self._rows = rows
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def scalars(self, stmt):
-        enabled = [m for m in self._rows if m.enabled is True]
-        return _FakeScalars(enabled)
+TEST_KEY = "test-gateway-key"
 
 
 @pytest.fixture
 def client(monkeypatch):
-    """桩化 gateway.AsyncSession 后挂真实 app（lifespan 惰性建连，离线安全）。"""
-    rows = [
-        Model(model_name="deepseek-v4-flash-0731", enabled=True),
-        Model(model_name="senseaudio-s2", enabled=True),
-        Model(model_name="disabled-model", enabled=False),
-    ]
-    session = _FakeSession(rows)
-
-    def _fake_session_factory(*args, **kwargs):
-        return session
-
-    monkeypatch.setattr(gateway_module, "AsyncSession", _fake_session_factory)
+    """预置 ApiKey + 3 模型，patch 鉴权与端点两处 AsyncSession 指向同一桩。"""
+    factory = lambda *a, **k: factory.shared
+    factory.shared = FakeSession(
+        [
+            ApiKey(
+                tenant_id=1,
+                name="test",
+                key_prefix=TEST_KEY[:10],
+                key_hash=hash_sk_key(TEST_KEY),
+                status="active",
+                expires_at=None,
+                model_whitelist=None,
+            ),
+            Model(model_name="deepseek-v4-flash-0731", enabled=True),
+            Model(model_name="senseaudio-s2", enabled=True),
+            Model(model_name="disabled-model", enabled=False),
+        ]
+    )
+    monkeypatch.setattr(security_module, "AsyncSession", factory)
+    monkeypatch.setattr(gateway_module, "AsyncSession", factory)
     with TestClient(create_app(), raise_server_exceptions=False) as c:
         yield c
 
@@ -73,7 +58,7 @@ def client(monkeypatch):
 def test_models_list_shape_and_content(client):
     """种子数据 → OpenAI list 结构 + 只含 enabled 模型（空 disabled 不出现）。"""
     resp = client.get(
-        "/v1/models", headers={"Authorization": "Bearer test-gateway-key"}
+        "/v1/models", headers={"Authorization": f"Bearer {TEST_KEY}"}
     )
     assert resp.status_code == 200
     body = resp.json()

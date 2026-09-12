@@ -10,7 +10,10 @@
 from collections import defaultdict
 from typing import Any
 
+from sqlalchemy import false, true
 from sqlalchemy.sql.elements import BinaryExpression
+from sqlalchemy.sql.operators import is_ as _is_op
+from sqlalchemy.sql.operators import isnot as _isnot_op
 
 
 class FakeScalars:
@@ -24,14 +27,22 @@ class FakeScalars:
 
 
 def _col_and_value(binary: BinaryExpression) -> tuple[str, Any]:
-    """从 `列 == 值` 二元表达式提取 (列名, 值)。
+    """从 `列 == 值` / `列.is_(布尔)` 二元表达式提取 (列名, 值)。
 
     SQLAlchemy 2.0 中右值以 BindParameter 形式出现（执行期才绑定），
     取值需取 .value（无则回退为字面量本身）。
+    `is_(True)` 类条件右值是 true()/false() 常量（无 .value），
+    按 operator 判定为 is_/isnot 时转成 bool。
     """
     name = getattr(binary.left, "key", None) or getattr(binary.left, "name", None)
     if name is None:
         raise ValueError(f"cannot parse where clause: {binary}")
+    if binary.operator is _is_op or binary.operator is _isnot_op:
+        # true()/false() 为模块级单例（elements.TRUE/FALSE）；bool() 求值会被禁
+        value = binary.right is true()
+        if binary.operator is _isnot_op:
+            value = not value
+        return name, value
     return name, getattr(binary.right, "value", binary.right)
 
 
