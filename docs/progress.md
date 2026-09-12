@@ -1,5 +1,21 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（git 仓库初始化，跨会话前保障）
+
+**做了什么**：
+
+1. 根 `.gitignore`：挡 `.env`（密钥红线）、Python（`__pycache__`/`.venv`/`.pytest_cache`）、Node（`node_modules`）、Docker 本地数据卷（`postgres_data/` 等）、IDE/OS 杂物；显式注明 uv.lock 与 alembic 迁移必须入库
+2. `git init`（主分支 main）+ 全量暂存 + 首次提交
+3. `.specify/feature.json` 被 spec-kit 自带 `.gitignore` 正确忽略（本地指针，按其约定不入库）
+
+**验证（dev-verify 证据）**：
+
+- `git log --oneline` → `fd694d9 chore: 初始化仓库——spec-kit 脚手架、W1 规格五件套、AGENTS.md 与进度三件套`（44 文件，5933 行）
+- `git status` → `nothing to commit, working tree clean`
+- 暂存清单人工核查：零 `.env` 类文件命中（密钥红线守卫成立）
+
+**意义**：TDD 证据链就位——后续 T015/T018（保护清单测试先行）可通过 git log 时间序自证。
+
 ## 会话 2026-09-11（W1 任务 0 收尾：clarify 回填 + plan + tasks）
 
 **做了什么**：
