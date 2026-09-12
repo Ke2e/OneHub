@@ -1,16 +1,76 @@
-"""Bearer 鉴权（T009）：网关面固定 Key 校验。
+"""Bearer 鉴权（T009）+ 管理面安全组件（W2 任务 1）：密码哈希 / JWT 签发校验。
 
-契约：`Authorization: Bearer <GATEWAY_API_KEY>`。
+网关面契约：`Authorization: Bearer <GATEWAY_API_KEY>`。
 - 缺失 / scheme 非 Bearer / 值不符 → 一律 401 authentication_error
 - 比对用 constant-time（hmac.compare_digest），防时序侧信道
+
+管理面（W2）：
+- 密码哈希：标准库 hashlib.pbkdf2_hmac（随机盐，格式 `pbkdf2_sha256$iter$salt$hash`）
+- JWT：pyjwt HS256 签发/校验（exp 过期、签名篡改 → 401）
 """
 
+import hashlib
+import hmac
+import secrets
+from datetime import datetime, timedelta, timezone
 from hmac import compare_digest
+from typing import Any
 
+import jwt
 from fastapi import Header
 
 from app.core.config import get_settings
 from app.core.errors import AuthenticationError
+
+_PBKDF2_ITERATIONS = 100_000
+_ACCESS_TOKEN_TTL = timedelta(hours=12)
+
+
+def hash_password(password: str) -> str:
+    """密码哈希：pbkdf2_hmac(sha256) + 随机盐。随机盐保证同密码两次哈希不同。"""
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), bytes.fromhex(salt), _PBKDF2_ITERATIONS
+    ).hex()
+    return f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${salt}${digest}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """校验密码：解析存储格式后重算比对（constant-time，防时序侧信道）。"""
+    try:
+        _, iterations, salt, expected = stored.split("$")
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), bytes.fromhex(salt), int(iterations)
+        ).hex()
+    except ValueError:
+        return False
+    return hmac.compare_digest(digest, expected)
+
+
+def create_access_token(
+    sub: str | int,
+    tenant_id: int,
+    expires_delta: timedelta = _ACCESS_TOKEN_TTL,
+) -> str:
+    """签发管理面 JWT（HS256）：sub=用户 ID，tenant_id=租户隔离边界。"""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(sub),
+        "tenant_id": tenant_id,
+        "iat": now,
+        "exp": now + expires_delta,
+    }
+    return jwt.encode(payload, get_settings().secret_key, algorithm="HS256")
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    """校验管理面 JWT：签名篡改 / 已过期 → 401 authentication_error。"""
+    try:
+        return jwt.decode(
+            token, get_settings().secret_key, algorithms=["HS256"]
+        )
+    except jwt.InvalidTokenError as exc:  # 含 ExpiredSignatureError / SignatureError
+        raise AuthenticationError("invalid or expired token") from exc
 
 
 def extract_bearer_token(authorization: str | None) -> str:
