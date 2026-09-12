@@ -1,0 +1,16 @@
+{
+  "name": "onehub-acceptance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OneHub W1 协议兼容验收脚本（SC-001/002/004/005 证据）：openai SDK 改 base_url 五断言",
+  "scripts": {
+    "verify": "node verify.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "openai": "^7.15.0"
+  }
+}
