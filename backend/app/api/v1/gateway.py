@@ -36,6 +36,35 @@ async def _stream_events(
     yield "data: [DONE]\n\n"
 
 
+@router.get("/models")
+async def list_models(
+    request: Request,
+    _api_key: str = Depends(require_gateway_api_key),
+) -> dict:
+    """模型列表（T021/US4）：models 表 enabled 集合 → OpenAI list 格式。
+
+    契约 GET /v1/models 节：{object: "list", data: [{id, object: "model",
+    created, owned_by}]}。表无 created/owned_by 列 → 协议壳层静态默认值
+    （created=0 / owned_by="onehub"）；DB 层已按 enabled=true 过滤。
+    """
+    async with AsyncSession(request.app.state.engine) as session:
+        rows = (
+            await session.scalars(select(Model).where(Model.enabled.is_(True)))
+        ).all()
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": m.model_name,
+                "object": "model",
+                "created": 0,
+                "owned_by": "onehub",
+            }
+            for m in rows
+        ],
+    }
+
+
 @router.post("/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
     request: Request,
