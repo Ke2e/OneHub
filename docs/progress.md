@@ -1,5 +1,49 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（W2 任务 2：网关面鉴权中间件表迁移达成，58 passed）
+
+**背景**：任务 1 完成（50 passed）。任务 2 目标 = 鉴权中间件（哈希校验→状态/白名单/过期）全分支单测——require_gateway_api_key 从 .env 固定 key（GATEWAY_API_KEY 配置比对）迁到 api_keys 表。
+
+**做了什么**：
+
+1. TDD 任务 2：
+   - RED `test_gateway_auth.py`（10 用例）：有效 active key 200 / 未知明文 401 / revoked 401 / 过期 401 / 无头 401 / 非 Bearer 401 / 白名单纯函数 4 分支 / 端点级白名单拒绝 404（模型全局 enabled 但 key 无权，验证不泄露授权粒度）。首跑 ImportError（check_model_whitelist 不存在）→ RED 成立
+   - GREEN 三连：① services/keys.py 增 `check_model_whitelist`（None/空列表全放行，纯同步无 IO）；② security.py 重写 `require_gateway_api_key`（Request+Header 注入 → extract_bearer_token → `hash_sk_key` SHA-256 → `select(ApiKey).where(key_hash==)` → status!=active 401 / expires_at 已过 401，返回 ApiKey 实体，明文永不回读）；③ gateway.py 依赖类型化（返回 ApiKey）+ chat_completions 加白名单授权（`check_model_whitelist` 拒绝 → 404 model_not_found）
+2. 桩能力补强：tests/_fake_db.py `_col_and_value` 支持 `is_(True)` 类条件（`Model.enabled.is_(True)` 查询在桩可用）——SQLAlchemy `true()`/`false()` 是模块级单例，`bool()` 求值被禁（`TypeError: Boolean value of this clause is not defined`），改用 `right is true()` 恒等判断；`isnot` 对称处理
+3. 死配置清理（迁移收尾）：config.py 删 `gateway_api_key` 字段（已无消费者）；conftest.py 删 GATEWAY_API_KEY 注入；.env.example 注释掉该行并标注「W1 验收脚本用，业务不再读取」；test_security.py 精简（删配置比对用例，保留 Bearer 头解析 4 用例）；test_models_endpoint.py 迁移（预置 `ApiKey(key_hash=SHA256("test-gateway-key"))` 进桩，patch security 与 gateway 两模块 AsyncSession 指向同一 FakeSession）
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **58 passed**（50 + 8 净增，无回归；任务 2 新用例 10 + 精简调整 -2）
+- 真机验收（httpx 脚本用完即删，本机 uvicorn :8001）：register/login **200/201**（JWT）→ create key **201**（`sk-d2fc535` 前缀，白名单=[deepseek-v4-flash-0731]）→ GET /v1/models **200**（两模型）→ 白名单内 model 真转发 **200**（content=W2T2-OK，usage=19）→ 白名单外 model **404 model_not_found** → 未知 key **401** → 软删后 key **401**，7 断言 ALL_PASS
+
+**下一步**：W2 任务 3 令牌桶（Redis Lua 手写）+ Semaphore 并发限流——超限 429+Retry-After，dev-tdd 先写测试（保护清单）。
+
+## 会话 2026-09-12（W2 启动：遗留关闭 + 任务 1 管理面 auth+keys CRUD 达成）
+
+**背景**：W1 全量完成（32 passed 基线）。本会话交接遗留 1/2，从 W2 任务 1（租户-用户-Key 三级模型 + 管理端 JWT + SK-Key）开始。
+
+**做了什么**：
+
+1. 遗留 1 关闭：W1 收尾三份独立 Conventional Commits 落地——`408b786`(feat acceptance T025) → `24a18f4`(docs phase8 T026) → `13b4ed7`(docs phase8 T027)，msg 文件已删，工作区 clean。遗留 2（W1 teach 讲解）仍待 Asize 自验（停机点精神，不代答）
+2. 停机点 3 处理：写 ADR-0001（docs/adr/0001-w2-jwt-redis-deps.md）提案引入 pyjwt + redis-py → **Asize 批准**（问询两问：ADR 批准 + 任务 1 范围定 min=auth+keys CRUD）→ `uv add redis pyjwt`（pyjwt 2.14.0 / redis 8.1.0）
+3. TDD 任务 1（四提交，git log 时间序自证）：
+   - RED 安全组件 `ca0d4a8`：test_admin_security.py 覆盖密码哈希（pbkdf2 随机盐）/ JWT 签发校验（过期/篡改→401）/ SK-Key 生成哈希（64 hex 对齐 CHAR(64)）
+   - GREEN `69d7c27`：security.py 扩展（hash_password/verify_password pbkdf2、create/decode_access_token pyjwt HS256、require_admin 依赖）+ services/keys.py（generate_sk_key 明文一次/prefix/hash）+ conftest SECRET_KEY 提到 32+ 字节（消 HS256 KeyLengthWarning）+ .env.example 注释提醒
+   - deps `12954ae`：pyproject+uv.lock 落 redis/pyjwt
+   - RED 端点 `8cda949`：tests/_fake_db.py（通用离线桩：add/commit/refresh/scalars/scalar/get + whereclause 解析，跨请求共享单例工厂）+ test_admin_auth（6 用例）+ test_admin_keys（5 用例）
+   - GREEN `8ceb3e6`：app/api/admin/{auth,keys}.py + schemas/admin.py + ConflictError(409) + main.py 注册管理面路由；SQLAlchemy 2.0 桩适配（raw column 为 AnnotatedTable 反查 __tablename__、右值 BindParameter 取 .value）；create key 显式 status="active" 不依赖 DB server_default
+4. 真机验收（dev-verify 证据，httpx 脚本用完即删，本机 uvicorn :8001 + 本地 pg）：
+   - register **201**（JWT 160 字符）→ 重复 register **409 conflict_error** → login **200**（user 回显）→ 错密码 **401 authentication_error** → keys 无 JWT **401** → create key **201**（`sk-832ad15` 前缀 + 白名单落库）→ list keys **200**（脱敏，无 key_hash/key）→ delete **204** → 软删后 status=**revoked**
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **50 passed**（32 基线 + 18 新增，无回归）
+- 上述真机 9 项断言全 PASS（命令输出如上）
+- git log：`... → 12954ae(deps) → ca0d4a8(test RED) → 69d7c27(feat GREEN) → 8cda949(test RED 端点) → 8ceb3e6(feat GREEN 端点)` TDD 时间序完整
+
+**下一步**：W2 任务 2 鉴权中间件（网关面 Key 表哈希校验 → 状态/白名单/过期，全分支单测）——require_gateway_api_key 从 .env 固定 key 迁到 api_keys 表。
+
 ## 会话 2026-09-12（Phase 8：T025–T027 + SC-001/002/003/004/005 全项终判，W1 收尾）
 
 **背景**：Phase 7 完成（US5 一键环境 SC-003 达成），Docker 三容器健康（onehub-api/pg/redis），.env 含真实 SenseAudio 渠道 key。从 T025 进入 W1 收尾（Polish & Cross-Cutting Concerns）。

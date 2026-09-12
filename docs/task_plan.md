@@ -27,8 +27,8 @@
 
 | # | 任务 | 状态 | 验收标准 |
 |---|------|------|---------|
-| 1 | 租户-用户-Key 三级模型 + 管理端 JWT；SK- Key 生成/哈希/白名单 | pending | 模型与 CRUD 可用 |
-| 2 | 鉴权中间件（哈希校验→状态/白名单/过期） | pending | 全分支单测 |
+| 1 | 租户-用户-Key 三级模型 + 管理端 JWT；SK- Key 生成/哈希/白名单 | completed | 模型与 CRUD 可用：管理面 register/login（JWT HS256 签发）+ keys CRUD（sk- 生成/SHA-256 哈希入库/白名单/软删）+ 租户隔离 ✅ |
+| 2 | 鉴权中间件（哈希校验→状态/白名单/过期） | completed | 全分支单测 ✅：表鉴权（hash_sk_key SHA-256 → key_hash 查表 → status/expires_at）六分支 + 白名单纯函数四分支 + 端点 404（58 passed，真机 7 断言 ALL_PASS）|
 | 3 | 令牌桶（Lua）+ Semaphore（dev-tdd 先写测试） | pending | 超限 429+Retry-After，并发无竞态 |
 | 4 | 幂等键支持 | pending | 重复请求不重复转发 |
 | 5 | teach 检查点：API Key 体系、限流四算法、Redis 原子性/Lua、幂等 | pending | 讲解通过 |
@@ -72,6 +72,8 @@
 | 2026-09-12 | Phase 6 执行期设计：T022 DB 来源取「离线桩 AsyncSession」（monkeypatch gateway 模块，假会话模拟 DB 层 enabled 过滤，TestClient 走真实 app + lifespan）而非真实测试库——与现有单测 mock 外部依赖风格一致（T014 MockTransport），最简且离线可复跑、零 Docker 依赖；T021 created/owned_by 表无列 → 协议壳层静态默认值（created=0 / owned_by="onehub"，对齐测试断言） | 新窗口决策（交接决策点），US4 验收语义「未启用不出现」在单测由桩模拟、真机验收兜底 |
 | 2026-09-12 | Phase 7 执行期设计（T023，路线 B 变体）：一键环境选「compose service 级 command shell 串」而非 Dockerfile ENTRYPOINT 脚本——新发现：原镜像无 alembic/seed.py（build context=backend/ 够不到根 scripts/），故先扩 context 到仓库根 + 新建 .dockerignore（挡 .env 真实 key 进构建上下文，密钥红线）+ 镜像实际 COPY alembic.ini/alembic/scripts/seed.py 自包含；command = `alembic upgrade head && PYTHONPATH=/app python scripts/seed.py && exec uvicorn`。seed.py 零改动（容器内 project root=/app，其 parents[1]+/backend 定位失效但 sys.path 插入不存在路径无害，PYTHONPATH=/app 接管 import app）；uvicorn 用绝对路径 .venv/bin 直调避免 uv run 潜在联网 sync | 空库 down -v 一键重建（Running upgrade + seed）与重复 up 幂等（零重建零重复种子）双验证通过；无新脚本文件、业务代码零改动，外科手术式 |
 | 2026-09-12 | Phase 8 执行期设计（T025）：验收脚本用 `scripts/acceptance/`（package.json + verify.mjs，openai ^7.15.0），**独立 `GATEWAY_BASE_URL` 变量**——根 .env 的 `BASE_URL` 是渠道上游键名（Phase 3 决策），直接读会污染 SDK 目标地址（首轮全 404 实测根因）；只从 .env 提取 `GATEWAY_API_KEY`。模型 ID 用种子实际 ID（quickstart 断言 4 的 deepseek-chat 是旧 ID，不照抄）。收尾 `client.close()`+`process.exitCode` 而非 `process.exit()`（Windows/libuv 未关句柄断言崩溃）。SC-004 定义一个关键语义：未知 model = HTTP 404 + `type=invalid_request_error` + `code=model_not_found`（OpenAI 官方语义，type 不是 model_not_found） | 验收脚本实测 5/5 exit 0 + SC-004 三分支 PASS（httpx 防 GBK） |
+| 2026-09-12 | 当前状态进 W2 | W1 收尾三份提交落地（408b786/24a18f4/13b4ed7），遗留 1 关闭 | — |
+| 2026-09-12 | W2 依赖决策经 ADR-0001（docs/adr/0001-w2-jwt-redis-deps.md）Asize 批准：引入 pyjwt（管理面 JWT）+ redis-py（令牌桶 Lua/幂等键载体）；JWT/Redis 客户端非保护清单项目，算法本体（Lua 令牌桶）仍手写；任务 1 范围定 min：auth + keys CRUD | 停机点 3 解除；uv add redis pyjwt 落 pyproject + uv.lock + 容器镜像自动携带 |
 
 ## 遇到的错误
 
