@@ -1,5 +1,27 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（Phase 1：T001–T004 + Checkpoint 达成，停机点 2 解除）
+
+**背景**：Asize 确认 plan/tasks，从 T001 开始执行 Phase 1。
+
+**做了什么**：
+
+1. T001 pyproject.toml：fastapi/uvicorn/sqlalchemy[asyncio]/alembic/asyncpg/httpx/pydantic-settings + pytest/pytest-asyncio dev 组；uv lock 生成 uv.lock（37 包）入库；uv sync 落 backend/.venv（Python 3.12.3）
+2. T002 FastAPI 骨架：`app/main.py`（create_app 应用工厂 + lifespan 管理 AsyncEngine 池，pool_pre_ping）+ `app/core/config.py`（pydantic-settings 五变量，默认值与 .env.example 对齐）
+3. T003 容器编排：`docker-compose.yml`（api/pg/redis 三服务 + healthcheck + 依赖等待）+ `backend/Dockerfile`（python:3.12-slim + uv 0.12.7 二进制，uv sync --frozen --no-dev 层缓存）+ `.env.example`（五变量含注释，密钥红线不入 git）
+4. T004 pytest 基建：`tests/conftest.py`（env 覆盖 + session event loop）+ 冒烟测试；pyproject 增 `asyncio_default_fixture_loop_scope`
+5. Checkpoint：起 Docker Desktop → 创建 .env（复制模板）→ `docker compose up -d --build` → 探活
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → `1 passed in 0.07s`
+- `uv run python -c "from app.main import app"` → 路由含 `/docs` `/openapi.json`
+- `docker compose up -d --build` → 三服务 Up，pg/redis healthy
+- `Invoke-WebRequest http://localhost:8000/docs` → **HTTP 200，`OneHub Gateway - Swagger UI`**
+- 提交链：`a66bd06`（T001）→ `0bcc421`（T002）→ `7c496bc`（T003）→ `772a439`（T004），各自独立 Conventional Commits
+
+**下一步**：Phase 2 T005–T009（7 表 SQLAlchemy + Alembic 全量迁移 + seed 幂等 + OpenAI 错误出口 + Bearer 鉴权单测），Checkpoint = 迁移可对 pg 执行、种子幂等、错误与鉴权单测绿。
+
 ## 会话 2026-09-12（git 仓库初始化，跨会话前保障）
 
 **做了什么**：

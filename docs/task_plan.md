@@ -9,7 +9,7 @@
 
 ## 当前状态
 
-**W1 · 任务 0 基本完成，停在停机点 2**：spec-kit 全链已走完——/specify（spec 16/16）→ /clarify（5 问 Asize 已答：Q1: B / Q2: A / Q3: B / Q4: A / Q5: B）→ /plan（plan/research/data-model/contracts/quickstart 五件套）→ /tasks（T001–T027）。**等待 Asize 确认 plan/tasks 后开始写代码**（停机点 2）。
+**W1 · Phase 1（T001–T004）+ Checkpoint 完成**：Asize 已确认 plan/tasks（停机点 2 解除）。Python 3.12 项目初始化（uv.lock 入库）、FastAPI 骨架（应用工厂 + lifespan + config）、compose（api/pg/redis）三容器构建健康、pytest 基建就绪。Checkpoint 证据：`GET http://localhost:8000/docs` → 200。**下一步 Phase 2（T005–T009）**：7 表模型 + Alembic 全量迁移 + 种子 + 错误出口 + 鉴权。
 
 ## 阶段总览
 
@@ -17,8 +17,8 @@
 
 | # | 任务 | 状态 | 验收标准 |
 |---|------|------|---------|
-| 0 | spec-kit 流程 + AGENTS.md + 三件套 | in_progress（等 /clarify 回答） | spec/plan/tasks 齐 + 本三件套就位 |
-| 1 | 脚手架：FastAPI + SQLAlchemy + Alembic + compose（pg/redis） | pending | `docker compose up` 后 /docs 可访问 |
+| 0 | spec-kit 流程 + AGENTS.md + 三件套 | completed | spec/plan/tasks 齐 + 本三件套就位 |
+| 1 | 脚手架：FastAPI + SQLAlchemy + Alembic + compose（pg/redis） | in_progress | `docker compose up` 后 /docs 可访问 ✅；Alembic 接入属 T006（Phase 2） |
 | 2 | OpenAI 兼容端点 + DeepSeek Provider（两版接口候选对比后定稿） | pending | OpenAI SDK 改 base_url，流式/非流式均能对话 |
 | 3 | SSE 流式透传 + delta 累计 usage | pending | 流式结束 usage 事件有 token 数 |
 | 4 | teach 检查点：FastAPI async、Pydantic/OpenAPI、适配器模式、httpx、SSE | pending | 讲解通过 |
@@ -62,6 +62,7 @@
 | 2026-09-11 | /clarify 答案：鉴权 = .env 固定 Key+Bearer（Q1:B）；流式 usage = 无条件注入 include_usage、无 usage 返 0、估算 W3（Q2:A）；models 来源 = DB+种子（Q3:B）；建表 = 全量 7 表（Q4:A）；验收 SDK = JS/TS（Q5:B） | Asize 亲自回答 |
 | 2026-09-11 | Provider 接口定稿候选 B：模板方法基类（research.md D1） | design-an-interface 两版对比，W1 任务 2 要求 |
 | 2026-09-11 | W1 零新增依赖：渠道密钥走 env，`api_key_encrypted` 存占位，加密方案 W4 走 ADR（research.md D2） | 规避停机点 3 触发，最小改动 |
+| 2026-09-12 | Asize 确认 plan/tasks，停机点 2 解除；从 T001 开始 Phase 1。构建工具定 uv（本机 0.12.7，uv.lock 入库） | 任务 0 决策 |
 
 ## 遇到的错误
 
