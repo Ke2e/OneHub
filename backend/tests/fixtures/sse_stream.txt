@@ -1,0 +1,14 @@
+: OneHub SSE fixture（T015）：覆盖解析器五能力——data: 前缀剥离 / 空行分隔 / [DONE] 终止 / 坏 JSON 跳过 / 上游中断截断（截断用例在测试内联）。
+: 首行注释 + 空行后正式开始；[DONE] 之后仍保留多余行，验证终止后不再产出。
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"cmpl-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"你好，世界"},"finish_reason":null}]}
+
+data: { broken json, deliberately unparseable }
+
+data: {"id":"cmpl-2","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"B"},"finish_reason":null}]}
+
+data: [DONE]
+
+data: {"id":"cmpl-3","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"never reached"},"finish_reason":null}]}
