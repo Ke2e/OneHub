@@ -1,19 +1,25 @@
 """应用配置：pydantic-settings 从环境变量 / .env 读取，集中管理。"""
 
 from functools import lru_cache
+from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 项目根目录：本文件位于 backend/app/core/，向上 3 级即仓库根（.env 所在地）。
+# 用绝对路径而非相对 cwd，保证从 backend/ 或仓库根任意目录运行都能读到。
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
     """OneHub 全部运行期配置。
 
-    字段默认值面向本地开发（与 .env.example 对齐）；
-    容器环境通过 compose env_file 注入同名环境变量覆盖。
+    字段默认值面向本地开发；容器环境通过 compose env_file 注入同名
+    环境变量覆盖。渠道 key 支持双键名（见 deepseek_api_key 注释）。
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -30,8 +36,18 @@ class Settings(BaseSettings):
     # W1 网关面固定管理 Key（Bearer 校验，W2 替换为 Key 表）
     gateway_api_key: str = "sk-gateway-dev"
 
-    # DeepSeek 渠道密钥：运行时 env 注入，不入库不落盘，绝对不入 git
-    deepseek_api_key: str = ""
+    # DeepSeek 渠道地址：优先 DEEPSEEK_BASE_URL，回退 .env 实际键名 BASE_URL
+    deepseek_base_url: str = Field(
+        default="https://api.deepseek.com",
+        validation_alias=AliasChoices("DEEPSEEK_BASE_URL", "BASE_URL"),
+    )
+
+    # DeepSeek 渠道密钥：双键名兼容——约定 DEEPSEEK_API_KEY 或 .env 实际键名 API_KEY。
+    # 运行时 env 注入，不入库不落盘，绝对不入 git，绝不打印值。
+    deepseek_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("DEEPSEEK_API_KEY", "API_KEY"),
+    )
 
 
 @lru_cache

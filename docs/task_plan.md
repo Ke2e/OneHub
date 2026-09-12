@@ -64,6 +64,8 @@
 | 2026-09-11 | W1 零新增依赖：渠道密钥走 env，`api_key_encrypted` 存占位，加密方案 W4 走 ADR（research.md D2） | 规避停机点 3 触发，最小改动 |
 | 2026-09-12 | Asize 确认 plan/tasks，停机点 2 解除；从 T001 开始 Phase 1。构建工具定 uv（本机 0.12.7，uv.lock 入库） | 任务 0 决策 |
 | 2026-09-12 | Phase 2 决策三则：① 种子因 DDL 无唯一约束不用 ON CONFLICT，改"查重→插入/同步"实现幂等（规避改 DDL 停机点）；② pytest 增 `pythonpath=["."]` 以便 tests/ 导入 app.*；③ 鉴权不强制 `sk-` 前缀（conftest 的 key 无前缀），"前缀格式"分支 = Authorization scheme 校验 | 执行期工程决策 |
+| 2026-09-12 | Phase 3 前置（Asize 确认）：.env 真实 DeepSeek key 用 `BASE_URL`+`API_KEY` 键名（非项目约定 `DEEPSEEK_API_KEY`）；采用"让配置适配现有键名"——改 config.py Settings 读这两个环境变量（或别名），不动 .env。key 值永不打印/入 git | 本会话交接决策，新窗口照做 |
+| 2026-09-12 | Phase 3 前置完成：config.py 用 `AliasChoices("DEEPSEEK_*", "*")` 双键名兼容；env_file 从相对 `.env` 改为指向项目根的绝对路径（修本地 backend/ 目录运行读不到 .env 的问题）。已从 backend/ 与根目录两处复验 base_url/api_key 均读到真实值（只验非空不打印 key） | 执行结果，T010 可开始 |
 
 ## 遇到的错误
 
