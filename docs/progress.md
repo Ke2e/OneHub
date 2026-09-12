@@ -1,5 +1,25 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（Phase 3：T010–T014 + CP3.1 达成，US1 非流式 MVP 可演示）
+
+**背景**：Phase 3 前置就绪（config 双键名 + env_file 绝对路径，上一会话）。Docker 三容器运行中，.env 含真实渠道 key。
+
+**做了什么**：
+
+1. T010 schemas：`app/schemas/chat.py`（ChatCompletionRequest 含透传 + extra=allow、Message、ChatCompletionResponse/Choice/Usage、流式 ChatCompletionChunk/Delta/ChunkChoice）严格对齐 contracts
+2. T011+T012 providers：`base.py` BaseProvider ABC（`_headers()` 抽象；chat() 通用实现——AsyncClient 连接池（limits 100/20）+ `_normalize_base_url()` 自动补 /v1、`_build_payload()`（exclude_none + 非流式不注入）、五类错误映射、响应结构校验零堆栈；chat_stream 占位留 Phase 4）+ `deepseek.py`（仅 Bearer 头差异点）
+3. T013 gateway：`app/api/v1/gateway.py` POST /v1/chat/completions（require_gateway_api_key → models 表 enabled 校验 404 model_not_found → app.state 单例 provider → provider.chat()）；main.py lifespan 构造 provider 单例 + router 注册
+4. T014 单测：`tests/unit/test_error_mapping.py`（401→authentication_error / 429→rate_limit_error / 502→api_error / 超时→504 / 连接拒绝→502 + 200 结构非法兜底 + 2xx 回归对照；MockTransport 注入，message 防泄漏断言）
+5. Asize 决策落地：base_url 自动规整 /v1 + 种子模型更新（deepseek-chat/reasoner → deepseek-v4-flash-0731/senseaudio-s2，SenseAudio 平台实际可用），dev 库数据同步
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **17 passed**（10 存量 + 7 新增错误映射）
+- 本机 uvicorn（localhost:8001，DATABASE_URL 覆盖 localhost）三分支：401 authentication_error ✅ / 404 model_not_found ✅ / 真 key 非流式转发 **200**（object=chat.completion，content=CP31-OK，usage 12/5/17，finish=stop）✅
+- 真机诊断链：getaddrinfo 失败（.env 主机名 pg）→ 502（上游 404：中转只认 /v1）→ 400 模型未找到 → 中转 /v1/models 列模型 → 决策落地后 200
+
+**下一步**：Phase 4 T015–T017（US2 流式 SSE 透传，保护清单 T015 先写测试先 RED）。
+
 ## 会话 2026-09-12（Phase 2：T005–T009 + Checkpoint 达成，阻塞解除）
 
 **背景**：Docker 三容器运行中，.env 已建，从 T005 继续 Phase 2（不依赖真实 key）。

@@ -9,7 +9,7 @@
 
 ## 当前状态
 
-**W1 · Phase 1（T001–T004）+ Phase 2（T005–T009）完成**：Asize 已确认 plan/tasks（停机点 2 解除）。Python 3.12 项目初始化（uv.lock 入库）、FastAPI 骨架（应用工厂 + lifespan + config）、compose（api/pg/redis）三容器构建健康、pytest 基建就绪。Phase 2：7 表 SQLAlchemy 模型 + Alembic async 迁移（001_initial 建齐 7 表 + idx_usage_key_time）+ 种子脚本（deepseek-main + 2 模型，幂等）+ OpenAI 统一错误出口 + Bearer 鉴权（四分支单测）。Checkpoint 证据：`alembic upgrade head` 成功、种子连跑两遍唯一、`uv run pytest -q` → 10 passed、api 容器重建后 /docs 200。**下一步 Phase 3（T010–T014）**：US1 非流式对话 MVP（schemas → Provider 基类 → DeepSeek 实现 → 网关端点 + 错误映射单测）。
+**W1 · Phase 1（T001–T004）+ Phase 2（T005–T009）+ Phase 3（T010–T014）完成**：Asize 已确认 plan/tasks（停机点 2 解除）。Python 3.12 项目初始化（uv.lock 入库）、FastAPI 骨架（应用工厂 + lifespan + config）、compose（api/pg/redis）三容器构建健康、pytest 基建就绪。Phase 2：7 表 SQLAlchemy 模型 + Alembic async 迁移 + 种子脚本（幂等）+ OpenAI 统一错误出口 + Bearer 鉴权（全分支单测）。Phase 3（US1 非流式 MVP）：schemas 协议模型 → BaseProvider 模板方法基类（连接池 + 错误映射）→ DeepSeekProvider → POST /v1/chat/completions（鉴权→enabled 校验→渠道透传）+ 错误映射五类单测；全量 `uv run pytest -q` → 17 passed。**CP3.1 证据**：本机 uvicorn 真 key 非流式转发 200（`chat.completion` 结构，content=CP31-OK，usage 12/5/17）；401/404 异常分支 OpenAI 结构正确。**下一步 Phase 4（T015–T017）**：流式 SSE 透传（保护清单 T015 先写测试）。
 
 ## 阶段总览
 
@@ -66,6 +66,7 @@
 | 2026-09-12 | Phase 2 决策三则：① 种子因 DDL 无唯一约束不用 ON CONFLICT，改"查重→插入/同步"实现幂等（规避改 DDL 停机点）；② pytest 增 `pythonpath=["."]` 以便 tests/ 导入 app.*；③ 鉴权不强制 `sk-` 前缀（conftest 的 key 无前缀），"前缀格式"分支 = Authorization scheme 校验 | 执行期工程决策 |
 | 2026-09-12 | Phase 3 前置（Asize 确认）：.env 真实 DeepSeek key 用 `BASE_URL`+`API_KEY` 键名（非项目约定 `DEEPSEEK_API_KEY`）；采用"让配置适配现有键名"——改 config.py Settings 读这两个环境变量（或别名），不动 .env。key 值永不打印/入 git | 本会话交接决策，新窗口照做 |
 | 2026-09-12 | Phase 3 前置完成：config.py 用 `AliasChoices("DEEPSEEK_*", "*")` 双键名兼容；env_file 从相对 `.env` 改为指向项目根的绝对路径（修本地 backend/ 目录运行读不到 .env 的问题）。已从 backend/ 与根目录两处复验 base_url/api_key 均读到真实值（只验非空不打印 key） | 执行结果，T010 可开始 |
+| 2026-09-12 | Phase 3 真机诊断出真实渠道为 SenseAudio 开放平台（.env BASE_URL=api.senseaudio.cn，非官方 DeepSeek）。Asize 决策：① base_url 代码层自动规整补 `/v1`（官方与中转均兼容，换官方 key 不再改 .env）；② 种子模型更新为平台实际可用 ID（deepseek-chat→`deepseek-v4-flash-0731`，deepseek-reasoner→`senseaudio-s2`），渠道 base_url 同步 | Provider `_normalize_base_url()` + seed.py 更新，CP3.1 据此通过 |
 
 ## 遇到的错误
 
@@ -75,3 +76,5 @@
 | alembic/TestClient 读取 UTF-8 中文 ini 报 GBK 解码错 | 2 | alembic.ini 注释改英文（configparser 用 locale 编码读） |
 | pytest 找不到 `app` 模块 | 2 | pyproject `[tool.pytest.ini_options] pythonpath=["."]` |
 | TestClient 触发 500 时直接抛异常 | 2 | `TestClient(..., raise_server_exceptions=False)` 让 ServerErrorMiddleware 转交统一出口 |
+| 本机 uvicorn 启动后 model 校验请求全部 500 | 2 | 根因：.env 的 DATABASE_URL 用容器主机名 `pg`，本机进程解析失败（`socket.gaierror`）。本机运行用环境变量覆盖 `DATABASE_URL=postgresql+asyncpg://onehub:onehub@localhost:5432/onehub`（.env 供 compose 内部使用，不一致属设计选择而非 bug） |
+| 真转发返回 502/404（message: upstream server error） | 3 | 根因：真实渠道为 SenseAudio 中转，只认 `/v1` 前缀路径且模型 ID 非 deepseek-chat。解决：`_normalize_base_url()` 自动补 `/v1` + 种子/DB 模型 ID 更新，CP3.1 后 200 |
