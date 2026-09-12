@@ -21,6 +21,7 @@ from app.core.errors import (
     UpstreamError,
 )
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
+from app.services.forward import sse_events
 
 # 上游请求默认超时：connect 隔离握手，read 兜底慢响应（SC-004「不挂死等待」）
 _DEFAULT_TIMEOUT = httpx.Timeout(timeout=60.0, connect=10.0)
@@ -137,8 +138,27 @@ class BaseProvider(ABC):
     async def chat_stream(
         self, request: ChatCompletionRequest
     ) -> AsyncIterator[dict[str, Any]]:
-        """流式：SSE 逐 chunk 产出。Phase 4（T015 测试 RED → T016/T017 实现转 GREEN）。
+        """流式：httpx stream() + aiter_lines() → SSE 解析器逐事件产出（US2 主路径）。
 
-        保护清单组件，先写测试再实现，W1 MVP 不实现。
+        链路（T016）：POST /chat/completions（stream=true 载荷已注入 include_usage）
+        → 状态码检查（非 2xx 复用 _map_upstream_error 错误映射）
+        → sse_events() 增量产出事件 dict；[DONE]/上游中断均自然收敛，不挂死调用方。
+        调用方断连：async with 退出关闭上游连接，终止上游消费（T016「断开检测终止上游」）。
         """
-        raise NotImplementedError("streaming lands in Phase 4 (T016/T017)")
+        payload = self._build_payload(request)
+        try:
+            async with self.client.stream(
+                "POST", "/chat/completions", json=payload
+            ) as resp:
+                if resp.is_error:
+                    raise self._map_upstream_error(resp.status_code)
+                async for chunk in sse_events(resp.aiter_lines()):
+                    yield chunk
+        except httpx.TimeoutException as exc:
+            raise UpstreamError(
+                message="upstream request timed out", status_code=504
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise UpstreamError(
+                message="upstream request failed", status_code=502
+            ) from exc
