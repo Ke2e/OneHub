@@ -1,0 +1,70 @@
+# OneHub 任务计划（W1–W4）
+
+> 本文件是项目唯一进度真相源。只按实际进度更新，不虚构完成状态（禁改清单）。
+> 每次会话开始先读本文件同步进度，再动手（AGENTS.md 会话启动规则）。
+
+## 目标
+
+交付 OpenAI 协议兼容的多模型 LLM API 聚合网关：鉴权、限流、计费、高可用四类工程问题各就各位，Locust 压测数字进简历。
+
+## 当前状态
+
+**W1 · 任务 0 基本完成，停在停机点 2**：spec-kit 全链已走完——/specify（spec 16/16）→ /clarify（5 问 Asize 已答：Q1: B / Q2: A / Q3: B / Q4: A / Q5: B）→ /plan（plan/research/data-model/contracts/quickstart 五件套）→ /tasks（T001–T027）。**等待 Asize 确认 plan/tasks 后开始写代码**（停机点 2）。
+
+## 阶段总览
+
+### W1 协议兼容层 + 单渠道转发（2026-09-10 起）
+
+| # | 任务 | 状态 | 验收标准 |
+|---|------|------|---------|
+| 0 | spec-kit 流程 + AGENTS.md + 三件套 | in_progress（等 /clarify 回答） | spec/plan/tasks 齐 + 本三件套就位 |
+| 1 | 脚手架：FastAPI + SQLAlchemy + Alembic + compose（pg/redis） | pending | `docker compose up` 后 /docs 可访问 |
+| 2 | OpenAI 兼容端点 + DeepSeek Provider（两版接口候选对比后定稿） | pending | OpenAI SDK 改 base_url，流式/非流式均能对话 |
+| 3 | SSE 流式透传 + delta 累计 usage | pending | 流式结束 usage 事件有 token 数 |
+| 4 | teach 检查点：FastAPI async、Pydantic/OpenAPI、适配器模式、httpx、SSE | pending | 讲解通过 |
+
+### W2 多租户鉴权 + 限流
+
+| # | 任务 | 状态 | 验收标准 |
+|---|------|------|---------|
+| 1 | 租户-用户-Key 三级模型 + 管理端 JWT；SK- Key 生成/哈希/白名单 | pending | 模型与 CRUD 可用 |
+| 2 | 鉴权中间件（哈希校验→状态/白名单/过期） | pending | 全分支单测 |
+| 3 | 令牌桶（Lua）+ Semaphore（dev-tdd 先写测试） | pending | 超限 429+Retry-After，并发无竞态 |
+| 4 | 幂等键支持 | pending | 重复请求不重复转发 |
+| 5 | teach 检查点：API Key 体系、限流四算法、Redis 原子性/Lua、幂等 | pending | 讲解通过 |
+| 6 | 📌 简历上墙点 1 + security-best-practices 审查 | pending | 简历初版 + 审查报告 |
+
+### W3 计费引擎
+
+| # | 任务 | 状态 | 验收标准 |
+|---|------|------|---------|
+| 1 | models 定价表 CRUD；余额预检（Redis） | pending | 预检不查库、不足返 402 |
+| 2 | 用量事件 → Redis Stream → Celery 异步落库 | pending | 链路通畅 |
+| 3 | 并发扣减：乐观锁 + 失败重试 | pending | 对账脚本通过（PROJECT_CONTEXT 6.3 标准） |
+| 4 | teach 检查点：幂等、事务隔离、并发扣减三方案、削峰 | pending | 讲解通过 |
+
+### W4 智能路由 + 管理台 + 压测
+
+| # | 任务 | 状态 | 验收标准 |
+|---|------|------|---------|
+| 1 | 加权轮询 + 指数退避重试（含抖动）；三态熔断器 | pending | 封主渠道自动切备、恢复切回 |
+| 2 | React 管理台 + ECharts 仪表盘 + Playground | pending | dogfood 通过 |
+| 3 | Locust 压测：200 并发流式 5min | pending | 错误率 <1%，记录 P95 |
+| 4 | teach 检查点：重试、熔断、负载均衡、CI/部署 | pending | 讲解通过 |
+| 5 | 📌 简历上墙点 2（压测数字入 R 部分） | pending | 简历完整版 |
+
+## 关键决策记录
+
+| 日期 | 决策 | 依据/ADR |
+|------|------|---------|
+| 2026-09-10 | 采用 spec-kit 流程管理 feature（001-openai-compat-gateway = W1） | PROJECT_CONTEXT 任务 0 |
+| 2026-09-10 | constitution 以 PROJECT_CONTEXT 第 2/8 节为源填充 | 治理原则需可执行 |
+| 2026-09-11 | /clarify 答案：鉴权 = .env 固定 Key+Bearer（Q1:B）；流式 usage = 无条件注入 include_usage、无 usage 返 0、估算 W3（Q2:A）；models 来源 = DB+种子（Q3:B）；建表 = 全量 7 表（Q4:A）；验收 SDK = JS/TS（Q5:B） | Asize 亲自回答 |
+| 2026-09-11 | Provider 接口定稿候选 B：模板方法基类（research.md D1） | design-an-interface 两版对比，W1 任务 2 要求 |
+| 2026-09-11 | W1 零新增依赖：渠道密钥走 env，`api_key_encrypted` 存占位，加密方案 W4 走 ADR（research.md D2） | 规避停机点 3 触发，最小改动 |
+
+## 遇到的错误
+
+| 错误 | 尝试次数 | 解决方案 |
+|------|---------|---------|
+| （暂无） | | |
