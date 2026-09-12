@@ -5,16 +5,19 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from app.api.v1.gateway import router as gateway_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
+from app.providers.deepseek import DeepSeekProvider
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时创建 async 引擎，关闭时释放连接池。
+    """应用生命周期：启动时创建 async 引擎与渠道 provider 单例，关闭时释放。
 
     create_async_engine 是惰性连接，应用可在 pg 未就绪时启动；
     实际查询时才建连（池预检 pool_pre_ping 应对连接回收）。
+    provider 单例持有 httpx 连接池（进程级复用），关闭时 aclose() 释放。
     """
     settings = get_settings()
     engine: AsyncEngine = create_async_engine(
@@ -22,14 +25,20 @@ async def lifespan(app: FastAPI):
         pool_pre_ping=True,
     )
     app.state.engine = engine
+    # T011/T013：单渠道 DeepSeek provider——密钥与 base_url 均来自 env（config 双键名），不入库
+    app.state.deepseek_provider = DeepSeekProvider(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+    )
     try:
         yield
     finally:
+        await app.state.deepseek_provider.aclose()
         await engine.dispose()
 
 
 def create_app() -> FastAPI:
-    """应用工厂：W1 仅网关骨架，路由注册在后续 Phase 接入。"""
+    """应用工厂：网关路由注册 + 统一错误出口（Phase 2/3 接入）。"""
     app = FastAPI(
         title="OneHub Gateway",
         description="OpenAI 协议兼容的多模型 LLM API 聚合网关",
@@ -37,6 +46,8 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         lifespan=lifespan,
     )
+    # T013：OpenAI 兼容网关面端点（POST /v1/chat/completions，US1 MVP）
+    app.include_router(gateway_router)
     # T008：统一错误出口——所有非 2xx 重塑为 OpenAI 错误结构（SC-004）
     register_error_handlers(app)
     return app

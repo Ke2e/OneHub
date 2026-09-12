@@ -1,0 +1,1 @@
+"""API v1：OpenAI 兼容网关面端点（US1 MVP 起）。"""
