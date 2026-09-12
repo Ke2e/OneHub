@@ -1,5 +1,34 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（Phase 8：T025–T027 + SC-001/002/003/004/005 全项终判，W1 收尾）
+
+**背景**：Phase 7 完成（US5 一键环境 SC-003 达成），Docker 三容器健康（onehub-api/pg/redis），.env 含真实 SenseAudio 渠道 key。从 T025 进入 W1 收尾（Polish & Cross-Cutting Concerns）。
+
+**做了什么**：
+
+1. T025 JS SDK 验收脚本：`scripts/acceptance/package.json` + `scripts/acceptance/verify.mjs`（openai **^7.15.0**，`run verify` 五断言任一失败 exit 1）。实施要点：
+   - 配置隔离：脚本用独立 `GATEWAY_BASE_URL`（默认 `http://localhost:8000/v1`），**读根 .env 时只提取 `GATEWAY_API_KEY`**——首轮运行全 404 的根因是 .env 的 `BASE_URL`（渠道上游键名，Phase 3 键名决策）混入 `process.env`，SDK 去打 SenseAudio 而非本地网关；修复后五断言全过
+   - 模型 ID 用种子实际 ID `deepseek-v4-flash-0731` / `senseaudio-s2`（quickstart 断言 4 的 `deepseek-chat` 是旧 ID，不照抄）
+   - Windows/libuv 崩溃修复：收尾 `await client.close()` + `process.exitCode` 赋值，替代 `process.exit()`（后者直接杀 keep-alive 句柄触发 libuv 断言崩溃，实测 exit 3221226505）
+   - 流式断言不显式传 `stream_options.include_usage`——顺带验证「调用方零配置」拿到 usage（网关侧注入由 T011 `_build_payload` 保证）
+2. T026 全链路验收：Docker compose 环境（三容器健康）+ `npm run verify` 五断言全过 + SC-004 错误抽查（临时 httpx 脚本防 GBK，验证后已删）三分支 PASS
+3. T027 W1 收尾文档：本日志 + task_plan.md 任务 0-4 状态与证据 + notes.md 周学习笔记（首次创建，teach 检查点材料同源）
+
+**验证（dev-verify 证据）**：
+
+- `cd scripts/acceptance && npm run verify` → **5/5 [PASS]，exit 0**：
+  1. 非流式：`choices[0].message.content` 非空 + `usage.prompt_tokens > 0`（SC-001）
+  2+3. 流式：delta 拼接完整（含 ACC-PASS-OK）+ 正常收尾（finish_reason=stop，[DONE] 由网关收尾）；末尾 chunk usage **prompt/completion/total 全非零正整数**（SC-002，调用方零配置）
+  4. models list `data[]` 含两实际 ID（deepseek-v4-flash-0731、senseaudio-s2）（US4）
+  5. 错 key → 401 + `error.message` 存在（SC-004）
+- SC-004 错误抽查（httpx，防 PowerShell GBK）三分支全 PASS：
+  - 未知 model（带 key）→ **404**，OpenAI 结构 `type=invalid_request_error` + `code=model_not_found`（对齐官方语义）
+  - 无 key / 错 key → **401** `type=authentication_error`（`code=null` 为官方认证错误常规形态，T009 既定实现）
+- `uv run pytest -q` → **32 passed**（基线保持，无回归）
+- SC 终判：SC-001 ✅（SDK 仅改 base_url 流式+非流式全成功）｜SC-002 ✅（五断言 3 流式末尾 usage 全字段非零；Phase 5 真机曾校验 usage=14/5/19 total=sum）｜SC-003 ✅（Phase 7 达成，本会话复核三容器健康、8 端口监听）｜SC-004 ✅（错误抽查 3 分支 + T014 五类上游错误映射单测 + T008 422/500 出口单测全绿，无堆栈泄漏）｜SC-005 ✅（`_stream_events` 逐事件 yield 不缓冲整段：StreamingResponse + `Cache-Control: no-cache` + `X-Accel-Buffering: no`，首块即时下发；Phase 4 真机 12 事件逐块透传佐证）
+
+**下一步**：W2（多租户鉴权 + 限流，task_plan.md 阶段总览推进）；W1 teach 检查点讲解材料已备（notes.md），**待 Asize 自验讲解通过**（不代答，停机点精神）。
+
 ## 会话 2026-09-12（Phase 7：T023–T024 + SC-003 达成，一键环境可演示）
 
 **背景**：Phase 6 完成（US4 模型列表，32 passed），Docker 三容器健康，.env 含真实 SenseAudio 渠道 key。从 T023 进入 US5 一键环境（P3）。
