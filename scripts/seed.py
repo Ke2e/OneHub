@@ -4,6 +4,12 @@
 - channels 1 行 deepseek-main，api_key_encrypted 占位 `env-injected`（D2：真实密钥运行期 env 注入）
 - models 2 行 deepseek-chat / deepseek-reasoner，均挂 deepseek-main
 
+2026-09-12（Asize 决策）：真实接入渠道为 SenseAudio 开放平台（.env BASE_URL/API_KEY），
+其可用模型 ID 与官方 DeepSeek 不同——种子模型更新为该平台实际存在的 LLM：
+    deepseek-v4-flash-0731（DeepSeek 系） / senseaudio-s2（平台旗舰）
+渠道 base_url 同步改为真实可解析地址（W1 转发实际走 settings.env，渠道表 base_url
+供未来 W4 路由读取）。
+
 DDL 中 channels.name / models.model_name 均无唯一约束，故不用 ON CONFLICT；
 改为"查重 → 无则插入，有则同步核心字段"，事务内完成，重复执行零副作用。
 
@@ -26,14 +32,15 @@ from app.models import Channel, Model
 CHANNEL = {
     "name": "deepseek-main",
     "provider": "deepseek",
-    "base_url": "https://api.deepseek.com",
+    # 真实可用地址（SenseAudio 开放平台，2026-09-12 Asize 决策；/v1 为 OpenAI 兼容前缀）
+    "base_url": "https://api.senseaudio.cn/v1",
     "api_key_encrypted": "env-injected",
     "weight": 10,
 }
 
 MODELS = [
-    {"model_name": "deepseek-chat", "channel_id": None},
-    {"model_name": "deepseek-reasoner", "channel_id": None},
+    {"model_name": "deepseek-v4-flash-0731", "channel_id": None},
+    {"model_name": "senseaudio-s2", "channel_id": None},
 ]
 
 

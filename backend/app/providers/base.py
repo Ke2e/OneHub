@@ -30,9 +30,20 @@ class BaseProvider(ABC):
     """模板方法：请求组装/错误映射/响应解析已实现，子类补 _headers。"""
 
     def __init__(self, base_url: str, api_key: str) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = self._normalize_base_url(base_url)
         self.api_key = api_key
         self._client: httpx.AsyncClient | None = None
+
+    @staticmethod
+    def _normalize_base_url(base_url: str) -> str:
+        """OpenAI 兼容 base_url 规整：统一补 /v1 前缀。
+
+        全网关转发统一走 {base_url}/chat/completions；官方 DeepSeek
+        （https://api.deepseek.com 两种路径均支持）与中转平台（仅 /v1）都兼容、
+        已含 /v1 的地址（https://x/v1）不重复拼接。
+        """
+        url = base_url.rstrip("/")
+        return url if url.endswith("/v1") else f"{url}/v1"
 
     @property
     def client(self) -> httpx.AsyncClient:
