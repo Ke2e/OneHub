@@ -33,9 +33,6 @@ class Settings(BaseSettings):
     # 管理面 JWT 签名密钥（W2 启用；W1 仅预留）
     secret_key: str = "change-me"
 
-    # W1 网关面固定管理 Key（Bearer 校验，W2 替换为 Key 表）
-    gateway_api_key: str = "sk-gateway-dev"
-
     # DeepSeek 渠道地址：优先 DEEPSEEK_BASE_URL，回退 .env 实际键名 BASE_URL
     deepseek_base_url: str = Field(
         default="https://api.deepseek.com",

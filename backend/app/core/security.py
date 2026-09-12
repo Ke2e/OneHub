@@ -1,7 +1,10 @@
-"""Bearer 鉴权（T009）+ 管理面安全组件（W2 任务 1）：密码哈希 / JWT 签发校验。
+"""Bearer 鉴权（T009 + W2 任务 2 迁移）+ 管理面安全组件（W2 任务 1）。
 
-网关面契约：`Authorization: Bearer <GATEWAY_API_KEY>`。
-- 缺失 / scheme 非 Bearer / 值不符 → 一律 401 authentication_error
+网关面契约（W2 起消费 api_keys 表，替代 .env 固定 key）：`Authorization: Bearer <sk-key>`。
+- 缺失 / scheme 非 Bearer → 401
+- SHA-256 哈希查 api_keys.key_hash 无记录 → 401
+- status != active（软删 revoked）→ 401；expires_at 已过 → 401
+- 明文永不回读：返回 ApiKey 实体（哈希/前缀），端点经白名单校验后使用
 - 比对用 constant-time（hmac.compare_digest），防时序侧信道
 
 管理面（W2）：
@@ -17,10 +20,14 @@ from hmac import compare_digest
 from typing import Any
 
 import jwt
-from fastapi import Header
+from fastapi import Header, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.errors import AuthenticationError
+from app.models import ApiKey
+from app.services.keys import hash_sk_key
 
 _PBKDF2_ITERATIONS = 100_000
 _ACCESS_TOKEN_TTL = timedelta(hours=12)
@@ -83,20 +90,28 @@ def extract_bearer_token(authorization: str | None) -> str:
     return token
 
 
-def verify_gateway_api_key(authorization: str | None) -> str:
-    """校验 key：constant-time 比对配置值，不匹配抛 401。"""
-    token = extract_bearer_token(authorization)
-    expected = get_settings().gateway_api_key
-    if not compare_digest(token.encode(), expected.encode()):
-        raise AuthenticationError()
-    return token
-
-
 async def require_gateway_api_key(
+    request: Request,
     authorization: str | None = Header(default=None),
-) -> str:
-    """FastAPI 依赖：网关面端点的鉴权入口。"""
-    return verify_gateway_api_key(authorization)
+) -> ApiKey:
+    """FastAPI 依赖（W2 任务 2）：网关面端点鉴权入口，返回 api_keys 表实体。
+
+    顺序：头提取 → SHA-256 哈希查表 → status/expires_at 校验。
+    校验通过返回 ApiKey（含 model_whitelist），端点据此做白名单授权。
+    """
+    token = extract_bearer_token(authorization)
+    key_hash = hash_sk_key(token)
+    async with AsyncSession(request.app.state.engine) as session:
+        key = await session.scalar(
+            select(ApiKey).where(ApiKey.key_hash == key_hash)
+        )
+    if key is None:
+        raise AuthenticationError()
+    if key.status != "active":
+        raise AuthenticationError("key is inactive or revoked")
+    if key.expires_at is not None and key.expires_at < datetime.now(timezone.utc):
+        raise AuthenticationError("key has expired")
+    return key
 
 
 async def require_admin(

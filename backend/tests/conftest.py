@@ -13,7 +13,6 @@ os.environ.setdefault(
 )
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
 os.environ.setdefault("SECRET_KEY", "test-secret-0123456789abcdef0123456789abcdef")
-os.environ.setdefault("GATEWAY_API_KEY", "test-gateway-key")
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
 
 

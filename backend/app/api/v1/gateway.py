@@ -16,9 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ModelNotFoundError
 from app.core.security import require_gateway_api_key
-from app.models import Model
+from app.models import ApiKey, Model
 from app.providers.deepseek import DeepSeekProvider
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
+from app.services.keys import check_model_whitelist
 
 router = APIRouter(prefix="/v1")
 
@@ -39,7 +40,7 @@ async def _stream_events(
 @router.get("/models")
 async def list_models(
     request: Request,
-    _api_key: str = Depends(require_gateway_api_key),
+    _api_key: ApiKey = Depends(require_gateway_api_key),
 ) -> dict:
     """模型列表（T021/US4）：models 表 enabled 集合 → OpenAI list 格式。
 
@@ -69,11 +70,11 @@ async def list_models(
 async def chat_completions(
     request: Request,
     req: ChatCompletionRequest,
-    _api_key: str = Depends(require_gateway_api_key),
+    api_key: ApiKey = Depends(require_gateway_api_key),
 ) -> ChatCompletionResponse | StreamingResponse:
     """对话端点：非流式返回完整 Chat Completion；流式返回 text/event-stream 逐块直通。"""
 
-    # 1) model 可用性校验（W1 数据源 = models 表 enabled 集合，种子里有 deepseek-chat/reasoner）
+    # 1) model 可用性校验（W1 数据源 = models 表 enabled 集合）
     async with AsyncSession(request.app.state.engine) as session:
         model = await session.scalar(
             select(Model).where(
@@ -84,10 +85,14 @@ async def chat_completions(
     if model is None:
         raise ModelNotFoundError()
 
-    # 2) 渠道实例化：app.state 单例（lifespan 构造，连接池复用，关闭时 aclose）
+    # 2) key 级模型白名单（W2 任务 2）：白名单非空且不含请求 model → 404（不泄露 key 授权粒度）
+    if not check_model_whitelist(api_key, req.model):
+        raise ModelNotFoundError()
+
+    # 3) 渠道实例化：app.state 单例（lifespan 构造，连接池复用，关闭时 aclose）
     provider: DeepSeekProvider = request.app.state.deepseek_provider
 
-    # 3) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
+    # 4) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
     if req.stream:
         return StreamingResponse(
             _stream_events(provider, req),

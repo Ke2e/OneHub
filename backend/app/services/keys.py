@@ -24,3 +24,13 @@ def generate_sk_key() -> tuple[str, str, str]:
     plaintext = SK_KEY_PREFIX + secrets.token_hex(16)
     key_prefix = plaintext[: 10]
     return plaintext, key_prefix, hash_sk_key(plaintext)
+
+
+def check_model_whitelist(key, model: str) -> bool:
+    """白名单判定（W2 任务 2）：key.model_whitelist 为空/None → 全放行；
+    非空则请求 model 必须命中，否则拒绝（端点据此返 404 model_not_found）。
+
+    纯同步函数（无 IO），端点鉴权后调用，单测覆盖四分支。
+    """
+    whitelist = key.model_whitelist
+    return whitelist is None or len(whitelist) == 0 or model in whitelist
