@@ -24,11 +24,15 @@ class FakeScalars:
 
 
 def _col_and_value(binary: BinaryExpression) -> tuple[str, Any]:
-    """从 `列 == 值` 二元表达式提取 (列名, 值)。"""
+    """从 `列 == 值` 二元表达式提取 (列名, 值)。
+
+    SQLAlchemy 2.0 中右值以 BindParameter 形式出现（执行期才绑定），
+    取值需取 .value（无则回退为字面量本身）。
+    """
     name = getattr(binary.left, "key", None) or getattr(binary.left, "name", None)
     if name is None:
         raise ValueError(f"cannot parse where clause: {binary}")
-    return name, binary.right
+    return name, getattr(binary.right, "value", binary.right)
 
 
 def _filters(stmt) -> list[tuple[str, Any]]:
@@ -75,13 +79,27 @@ class FakeSession:
         pass  # id 已在 commit 分配
 
     # ── 读路径 ──
+    def _store_key(self, stmt):
+        """定位 stmt 的目标实体类型。
+
+        select(User) 的 raw column 是 AnnotatedTable（User.__table__）而非实体类，
+        按 __tablename__ 反查 store 的实体类型键。
+        """
+        try:
+            raw = stmt._raw_columns[0]
+        except (AttributeError, TypeError):
+            return None
+        if isinstance(raw, type):
+            return raw
+        name = getattr(raw, "name", None)
+        for cls in self._store:
+            if getattr(cls, "__tablename__", None) == name:
+                return cls
+        return None
+
     def _query(self, stmt):
         filters = _filters(stmt)
-        try:
-            # select(User) → 首个 raw column 即实体类；失败则遍历全部类型兜底
-            target = self._store.get(stmt._raw_columns[0], [])
-        except (AttributeError, TypeError):
-            target = [obj for objs in self._store.values() for obj in objs]
+        target = self._store.get(self._store_key(stmt), [])
         return [
             obj
             for obj in target
@@ -94,6 +112,13 @@ class FakeSession:
     async def scalar(self, stmt):
         rows = self._query(stmt)
         return rows[0] if rows else None
+
+    async def get(self, model_type: type, pk):
+        """按主键直取（对齐 AsyncSession.get）。"""
+        for obj in self._store.get(model_type, []):
+            if getattr(obj, "id", None) == pk:
+                return obj
+        return None
 
     # ── 测试断言辅助 ──
     def stored(self, model_type: type) -> list:

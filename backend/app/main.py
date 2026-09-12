@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from app.api.admin import router as admin_router
 from app.api.v1.gateway import router as gateway_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
@@ -48,6 +49,8 @@ def create_app() -> FastAPI:
     )
     # T013：OpenAI 兼容网关面端点（POST /v1/chat/completions，US1 MVP）
     app.include_router(gateway_router)
+    # W2 任务 1：管理面端点（/api/auth + /api/keys，JWT 鉴权）
+    app.include_router(admin_router)
     # T008：统一错误出口——所有非 2xx 重塑为 OpenAI 错误结构（SC-004）
     register_error_handlers(app)
     return app

@@ -17,7 +17,15 @@ from app.main import create_app
 from app.models import ApiKey
 from tests._fake_db import FakeSession
 
-JWT_TOKEN = "dummy-admin-jwt"  # 端点仅依赖 require_admin 校验；此处直通测试下层断言
+
+def _shared_factory():
+    """返回持有单例 FakeSession 的 AsyncSession 工厂（跨请求共享状态）。"""
+
+    def factory(*args, **kwargs):
+        return factory.shared
+
+    factory.shared = FakeSession()
+    return factory
 
 
 def _jwt_header():
@@ -28,12 +36,8 @@ def _jwt_header():
 
 @pytest.fixture
 def client(monkeypatch, request):
-    """桩化 keys 模块 AsyncSession（离线），挂真实 app。"""
-
-    def _fake_factory(*args, **kwargs):
-        return FakeSession()
-
-    monkeypatch.setattr(keys_module, "AsyncSession", _fake_factory)
+    """桩化 keys 模块 AsyncSession（共享单例），挂真实 app（create→list 同状态）。"""
+    monkeypatch.setattr(keys_module, "AsyncSession", _shared_factory())
     with TestClient(create_app(), raise_server_exceptions=False) as c:
         yield c
 
@@ -46,14 +50,8 @@ def _create_key(client, **overrides):
 
 def test_create_key_returns_plaintext_once(client, monkeypatch):
     """POST /api/keys：201 + 明文 sk-；桩内 key_hash = SHA256(明文)；白名单落库。"""
-    seen = {}
-
-    def _fake_factory(*args, **kwargs):
-        session = FakeSession()
-        seen["session"] = session
-        return session
-
-    monkeypatch.setattr(keys_module, "AsyncSession", _fake_factory)
+    factory = _shared_factory()
+    monkeypatch.setattr(keys_module, "AsyncSession", factory)
     with TestClient(create_app(), raise_server_exceptions=False) as c:
         resp = _create_key(c)
         assert resp.status_code == 201
@@ -64,7 +62,7 @@ def test_create_key_returns_plaintext_once(client, monkeypatch):
     assert body["name"] == "prod-key"
     assert body["model_whitelist"] == ["deepseek-v4-flash-0731"]
 
-    stored: ApiKey = seen["session"].stored(ApiKey)[0]
+    stored: ApiKey = factory.shared.stored(ApiKey)[0]
     assert stored.key_hash == hash_sk_key(body["key"])  # 只存哈希
     assert stored.key_prefix == body["key_prefix"]
     assert stored.model_whitelist == ["deepseek-v4-flash-0731"]
@@ -98,21 +96,15 @@ def test_list_keys_without_hash(client):
 
 def test_delete_key_soft_revokes(client, monkeypatch):
     """DELETE /api/keys/{id}：204，status → revoked（软删保外键引用）。"""
-    seen = {}
-
-    def _fake_factory(*args, **kwargs):
-        session = FakeSession()
-        seen["session"] = session
-        return session
-
-    monkeypatch.setattr(keys_module, "AsyncSession", _fake_factory)
+    factory = _shared_factory()
+    monkeypatch.setattr(keys_module, "AsyncSession", factory)
     with TestClient(create_app(), raise_server_exceptions=False) as c:
         created = _create_key(c)
         key_id = created.json()["id"]
         resp = c.delete(f"/api/keys/{key_id}", headers=_jwt_header())
         assert resp.status_code == 204
 
-    stored: ApiKey = seen["session"].stored(ApiKey)[0]
+    stored: ApiKey = factory.shared.stored(ApiKey)[0]
     assert stored.status == "revoked"
 
 

@@ -17,14 +17,20 @@ from app.models import Tenant, User
 from tests._fake_db import FakeSession
 
 
+def _shared_factory():
+    """返回持有单例 FakeSession 的 AsyncSession 工厂（跨请求共享状态）。"""
+
+    def factory(*args, **kwargs):
+        return factory.shared
+
+    factory.shared = FakeSession()
+    return factory
+
+
 @pytest.fixture
 def client(monkeypatch):
-    """桩化 auth 模块 AsyncSession（离线，无 Docker 依赖），挂真实 app。"""
-
-    def _fake_factory(*args, **kwargs):
-        return FakeSession()
-
-    monkeypatch.setattr(auth_module, "AsyncSession", _fake_factory)
+    """桩化 auth 模块 AsyncSession（共享单例，register→login 跨请求状态一致）。"""
+    monkeypatch.setattr(auth_module, "AsyncSession", _shared_factory())
     with TestClient(create_app(), raise_server_exceptions=False) as c:
         yield c
 
@@ -54,23 +60,15 @@ def test_register_creates_tenant_and_user_returns_token(client, monkeypatch):
 
 
 def test_register_stores_hashed_password(client, monkeypatch):
-    """落库断言：桩里存的 password_hash 非明文且可 verify（凭单人提验证）。"""
-    # 通过 monkeypatch 捕获 FakeSession 实例（生成一次请求后从 fixture 外探针）
-    seen = {}
-
-    def _fake_factory(*args, **kwargs):
-        session = FakeSession()
-        seen["session"] = session
-        return session
-
-    monkeypatch.setattr(auth_module, "AsyncSession", _fake_factory)
+    """落库断言：桩里存的 password_hash 非明文（verify 通过才可登录）。"""
+    factory = _shared_factory()
+    monkeypatch.setattr(auth_module, "AsyncSession", factory)
     with TestClient(create_app(), raise_server_exceptions=False) as c:
         resp = _register(c)
         assert resp.status_code == 201
 
-    session: FakeSession = seen["session"]
-    users = session.stored(User)
-    tenants = session.stored(Tenant)
+    users = factory.shared.stored(User)
+    tenants = factory.shared.stored(Tenant)
     assert len(users) == 1 and len(tenants) == 1
     stored: User = users[0]
     assert stored.password_hash != "s3cret-pass"

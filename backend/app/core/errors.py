@@ -69,6 +69,17 @@ class RateLimitError(OpenAIError):
         )
 
 
+class ConflictError(OpenAIError):
+    """资源冲突（W2 管理面：register 重复 email 等）→ 409。"""
+
+    def __init__(self, message: str = "resource already exists") -> None:
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_409_CONFLICT,
+            error_type="conflict_error",
+        )
+
+
 class UpstreamError(OpenAIError):
     """上游不可用/超时 → 502/504，OpenAI api_error 结构、零内部堆栈。"""
 

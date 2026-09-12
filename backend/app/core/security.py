@@ -97,3 +97,15 @@ async def require_gateway_api_key(
 ) -> str:
     """FastAPI 依赖：网关面端点的鉴权入口。"""
     return verify_gateway_api_key(authorization)
+
+
+async def require_admin(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """FastAPI 依赖：管理面端点的鉴权入口（Bearer JWT → claims）。
+
+    返回解码后的 claims（sub=用户 ID、tenant_id=租户隔离边界），
+    供管理面端点做租户维度的数据隔离与归属校验。
+    """
+    token = extract_bearer_token(authorization)
+    return decode_access_token(token)
