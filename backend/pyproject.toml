@@ -22,3 +22,5 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# 让 tests/ 下可 import app.*（模块根为 backend）
+pythonpath = ["."]
