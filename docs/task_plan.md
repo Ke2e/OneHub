@@ -9,7 +9,7 @@
 
 ## 当前状态
 
-**W1 · Phase 1（T001–T004）+ Phase 2（T005–T009）+ Phase 3（T010–T014）+ Phase 4（T015–T017）+ Phase 5（T018–T020）完成**：Asize 已确认 plan/tasks（停机点 2 解除）。Python 3.12 项目初始化（uv.lock 入库）、FastAPI 骨架（应用工厂 + lifespan + config）、compose（api/pg/redis）三容器构建健康、pytest 基建就绪。Phase 2：7 表 SQLAlchemy 模型 + Alembic async 迁移 + 种子脚本（幂等）+ OpenAI 统一错误出口 + Bearer 鉴权（全分支单测）。Phase 3（US1 非流式 MVP）：schemas 协议模型 → BaseProvider 模板方法基类（连接池 + 错误映射）→ DeepSeekProvider → POST /v1/chat/completions（鉴权→enabled 校验→渠道透传）+ 错误映射五类单测。Phase 4（US2 流式 SSE 透传，保护清单 TDD）：T015 SSE 解析器测试先行（RED）→ T016 forward.py（SSELineParser 状态机 + sse_events 异步适配 + provider.chat_stream）→ T017 gateway stream:true 分支（StreamingResponse 直通），T015 转 GREEN。Phase 5（US3 流式 usage，保护清单 TDD）：T018 usage 提取测试先行（RED）→ T019 forward.py 增 UsageTracker（透传+提取，上游未返 usage 合成 0 兜底）+ with_usage 适配 + chat_stream 接入（T018 转 GREEN）→ T020 Mock 上游 SSE 端到端。全量 `uv run pytest -q` → 30 passed。**CP3.1 证据**：本机 uvicorn 真 key 非流式转发 200（`chat.completion` 结构，content=CP31-OK，usage 12/5/17）；401/404 异常分支 OpenAI 结构正确。**CP4.1 证据**：真 key 流式转发 200（`text/event-stream`，12 个 data 事件逐块透传，delta 拼接完整=CP4-OK 整句，`data: [DONE]` 正常收尾）。**CP5.1 证据**：真 key 流式末尾 chunk usage 非零（prompt 14 / completion 5 / total 19，SenseAudio 支持 include_usage，上游 usage 原样透传；若上游不返则有合成 0 兜底，SC-002）。**下一步 Phase 6（T021–T022，US4 模型列表）**：GET /v1/models，仅依赖 Phase 2。
+**W1 · Phase 1–6（T001–T022）完成**：Asize 已确认 plan/tasks（停机点 2 解除）。Python 3.12 项目初始化（uv.lock 入库）、FastAPI 骨架（应用工厂 + lifespan + config）、compose（api/pg/redis）三容器构建健康、pytest 基建就绪。Phase 2：7 表 SQLAlchemy 模型 + Alembic async 迁移 + 种子脚本（幂等）+ OpenAI 统一错误出口 + Bearer 鉴权（全分支单测）。Phase 3（US1 非流式 MVP）：schemas 协议模型 → BaseProvider 模板方法基类（连接池 + 错误映射）→ DeepSeekProvider → POST /v1/chat/completions（鉴权→enabled 校验→渠道透传）+ 错误映射五类单测。Phase 4（US2 流式 SSE 透传，保护清单 TDD）：T015 SSE 解析器测试先行（RED）→ T016 forward.py（SSELineParser 状态机 + sse_events 异步适配 + provider.chat_stream）→ T017 gateway stream:true 分支（StreamingResponse 直通），T015 转 GREEN。Phase 5（US3 流式 usage，保护清单 TDD）：T018 usage 提取测试先行（RED）→ T019 forward.py 增 UsageTracker（透传+提取，上游未返 usage 合成 0 兜底）+ with_usage 适配 + chat_stream 接入（T018 转 GREEN）→ T020 Mock 上游 SSE 端到端。Phase 6（US4 模型列表）：T022 端点单测先行（离线桩 AsyncSession，RED 404）→ T021 GET /v1/models（enabled 集合 → OpenAI list，挂鉴权依赖），32 passed。**CP3.1 证据**：本机 uvicorn 真 key 非流式转发 200（`chat.completion` 结构，content=CP31-OK，usage 12/5/17）；401/404 异常分支 OpenAI 结构正确。**CP4.1 证据**：真 key 流式转发 200（`text/event-stream`，12 个 data 事件逐块透传，delta 拼接完整=CP4-OK 整句，`data: [DONE]` 正常收尾）。**CP5.1 证据**：真 key 流式末尾 chunk usage 非零（prompt 14 / completion 5 / total 19，SenseAudio 支持 include_usage，上游 usage 原样透传；若上游不返则有合成 0 兜底，SC-002）。**US4 证据**：GET /v1/models 真机 200（object=list，data[]=['deepseek-v4-flash-0731','senseaudio-s2']，无旧 ID）+ 无 key 401。**下一步 Phase 7（T023–T024，US5 一键环境）**：api 容器 entrypoint 串 migration+seed（种子幂等已在 T007 保障）。
 
 ## 阶段总览
 
@@ -19,7 +19,7 @@
 |---|------|------|---------|
 | 0 | spec-kit 流程 + AGENTS.md + 三件套 | completed | spec/plan/tasks 齐 + 本三件套就位 |
 | 1 | 脚手架：FastAPI + SQLAlchemy + Alembic + compose（pg/redis） | completed | `docker compose up` 后 /docs 可访问 ✅；Alembic 接入属 T006（Phase 2）✅ |
-| 2 | OpenAI 兼容端点 + DeepSeek Provider（两版接口候选对比后定稿） | completed | OpenAI SDK 改 base_url，流式/非流式均能对话：非流式 CP3.1（200 + usage）✅、流式 CP4.1（text/event-stream 逐块 + [DONE]）✅；T025 SDK 五断言在 Phase 8 终验 |
+| 2 | OpenAI 兼容端点 + DeepSeek Provider（两版接口候选对比后定稿） | completed | OpenAI SDK 改 base_url，流式/非流式均能对话：非流式 CP3.1（200 + usage）✅、流式 CP4.1（text/event-stream 逐块 + [DONE]）✅；T025 SDK 五断言在 Phase 8 终验；models 列表 US4：GET /v1/models 200 object=list + 无 key 401 ✅（T022 决策：测试用离线桩，见决策记录） |
 | 3 | SSE 流式透传 + delta 累计 usage | completed | 流式结束 usage 事件有 token 数：T018 先写测试（Phase 5）✅ CP5.1 真 key 末尾 usage 14/5/19 非零（SC-002）✅；上游不返 usage 合成 0 兜底不报错（T018/T020 覆盖）✅ |
 | 4 | teach 检查点：FastAPI async、Pydantic/OpenAPI、适配器模式、httpx、SSE | pending | 讲解通过 |
 
@@ -69,6 +69,7 @@
 | 2026-09-12 | Phase 3 真机诊断出真实渠道为 SenseAudio 开放平台（.env BASE_URL=api.senseaudio.cn，非官方 DeepSeek）。Asize 决策：① base_url 代码层自动规整补 `/v1`（官方与中转均兼容，换官方 key 不再改 .env）；② 种子模型更新为平台实际可用 ID（deepseek-chat→`deepseek-v4-flash-0731`，deepseek-reasoner→`senseaudio-s2`），渠道 base_url 同步 | Provider `_normalize_base_url()` + seed.py 更新，CP3.1 据此通过 |
 | 2026-09-12 | Phase 4 执行期设计：SSE 解析器定稿为「同步状态机 SSELineParser（feed/finish/parse_full，事件级结算）+ sse_events() 异步适配」双形态——同步核心保单测直白，增量 feed 供 httpx aiter_lines 流式消费；坏 JSON 事件跳过（容错不透传，防 SDK 侧崩）、EOF 无 [DONE] 自然收敛（上游中断截断）；转发错误映射复用 T011 `_map_upstream_error` | forward.py 单一实现，T015 单测全部走同步核心 |
 | 2026-09-12 | Phase 5 执行期设计：usage 提取沿用 SSE 解析器双形态定式——同步核心 `UsageTracker`（feed 原样透传 + 提取 usage；finish() 在上游未返 usage 时合成 usage=0 兜底 chunk 事件，位次=流尾最后一个产出，gateway 的 [DONE] 前）+ `with_usage()` 异步适配包 `sse_events`；provider.chat_stream 换用 `with_usage(sse_events(...))`。合成事件采样第一条 chunk 的 id/created/model，choices=[]（OpenAI usage chunk 语义） | SC-002 形式保证（调用方末尾总拿到 usage 对象）；透传语义不破坏 US2（坏 JSON 仍跳过、[DONE] 仍收敛） |
+| 2026-09-12 | Phase 6 执行期设计：T022 DB 来源取「离线桩 AsyncSession」（monkeypatch gateway 模块，假会话模拟 DB 层 enabled 过滤，TestClient 走真实 app + lifespan）而非真实测试库——与现有单测 mock 外部依赖风格一致（T014 MockTransport），最简且离线可复跑、零 Docker 依赖；T021 created/owned_by 表无列 → 协议壳层静态默认值（created=0 / owned_by="onehub"，对齐测试断言） | 新窗口决策（交接决策点），US4 验收语义「未启用不出现」在单测由桩模拟、真机验收兜底 |
 
 ## 遇到的错误
 

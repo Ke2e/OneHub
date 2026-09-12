@@ -1,5 +1,24 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（Phase 6：T021–T022 + US4 达成，模型列表可演示）
+
+**背景**：Phase 5 完成（US3 流式 usage，30 passed），Docker 三容器健康，.env 含真实 SenseAudio 渠道 key。从 T021 进入 US4 模型列表（仅依赖 Phase 2）。
+
+**做了什么**：
+
+1. T022（RED）测试先行：`tests/unit/test_models_endpoint.py`——设计决策点：DB 来源取「离线桩 AsyncSession」（monkeypatch gateway 模块 AsyncSession，假会话 async with + scalars() 模拟 DB 层 enabled 过滤，TestClient 走真实 app + lifespan 惰性建连，零 Docker 依赖、离线可复跑，与 T014 MockTransport 的 mock 外部依赖风格一致），数据用种子形态（deepseek-v4-flash-0731 / senseaudio-s2 两 enabled + disabled-model）。两用例：① list 结构 + 只含 enabled（含 created=0/owned_by="onehub" 壳层断言，对齐 T021）；② 无 key 401 authentication_error。运行确认 404 FAIL 后单独提交 `8e158a0`
+2. T021 实现转 GREEN：`gateway.py` 增 `GET /v1/models`——models 表 `enabled.is_(True)` 集合 → OpenAI list 格式（object=list，data[] 每项 id=model_name/object="model"/created=0/owned_by="onehub"，后两者协议壳层静态默认值），挂 `require_gateway_api_key`（contracts 全端点多面鉴权）。2 passed，提交 `34095c4`
+3. 全量回归：`uv run pytest -q` → **32 passed**（30 存量 + 2 新增）
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → 32 passed
+- git log TDD 时间序：`8e158a0`(test RED) → `34095c4`(feat GREEN)
+- 真机验收（临时 httpx 脚本模拟 SDK 改 base_url 打本机 uvicorn :8001，DATABASE_URL 覆盖 localhost，脚本已删）：**GET /v1/models 200**，object=list，`data[].id = ['deepseek-v4-flash-0731', 'senseaudio-s2']`（含启用模型、无旧 deepseek-chat）；无 key → **401** `{"error":{"type":"authentication_error"}}` → **ACCEPT US4**
+- 决策落盘：task_plan.md 关键决策记录 +1（Phase 6 执行期设计）
+
+**下一步**：Phase 7 T023–T024（US5 一键环境：api 容器 entrypoint 串 migration+seed）+ W1 teach 检查点。
+
 ## 会话 2026-09-12（Phase 5：T018–T020 + SC-002 达成，US3 流式 usage 可用）
 
 **背景**：Phase 4 完成（US2 流式 SSE 透传 12 事件 + [DONE]），Docker 三容器健康，.env 含真实 SenseAudio 渠道 key。从 T018 进入 US3 流式 usage（保护清单，测试先行）。
