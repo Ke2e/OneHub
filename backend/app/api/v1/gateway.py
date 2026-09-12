@@ -1,11 +1,16 @@
-"""T013 网关面端点：POST /v1/chat/completions（US1 非流式对话 MVP）。
+"""T013/T017 网关面端点：POST /v1/chat/completions（US1 非流式 + US2 流式 SSE 透传）。
 
 链路：鉴权依赖 → model ∈ models 表 enabled 集合校验（缺 → ModelNotFoundError）
 → 渠道实例化（W1 单渠道：app.state 单例 DeepSeekProvider，连接池进程级复用）
-→ provider.chat() 透传响应（含 usage）。
+→ stream=false 走 provider.chat() 非流式；stream=true 走 provider.chat_stream()
+  逐事件转 SSE 行（data: {chunk}\n\n，[DONE] 收尾）直通调用方（contracts 流式节）。
 """
 
+import json
+from typing import AsyncIterator
+
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,13 +23,26 @@ from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
 router = APIRouter(prefix="/v1")
 
 
+async def _stream_events(
+    provider: DeepSeekProvider, req: ChatCompletionRequest
+) -> AsyncIterator[str]:
+    """流式透传：上游事件 dict → SSE 行（data: {json}\n\n），[DONE] 正常收尾。
+
+    坏 JSON 已在解析器层跳过；调用方断连时本生成器被取消，provider 的 async with
+    退出并关闭上游连接（T016「断开检测终止上游」，无额外代码）。
+    """
+    async for chunk in provider.chat_stream(req):
+        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 @router.post("/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
     request: Request,
     req: ChatCompletionRequest,
     _api_key: str = Depends(require_gateway_api_key),
-) -> ChatCompletionResponse:
-    """非流式对话：校验 + 转发，返回 OpenAI Chat Completion 结构（contracts 非流式节）。"""
+) -> ChatCompletionResponse | StreamingResponse:
+    """对话端点：非流式返回完整 Chat Completion；流式返回 text/event-stream 逐块直通。"""
 
     # 1) model 可用性校验（W1 数据源 = models 表 enabled 集合，种子里有 deepseek-chat/reasoner）
     async with AsyncSession(request.app.state.engine) as session:
@@ -41,4 +59,13 @@ async def chat_completions(
     provider: DeepSeekProvider = request.app.state.deepseek_provider
 
     # 3) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
+    if req.stream:
+        return StreamingResponse(
+            _stream_events(provider, req),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # 禁用反向代理缓冲，保证逐块即时下发
+            },
+        )
     return await provider.chat(req)
