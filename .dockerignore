@@ -1,0 +1,30 @@
+# 密钥红线：构建上下文永不携带真实密钥（build context 已扩到仓库根，防 .env 泄露）
+.env
+.env.*
+*.env
+
+# 版本库 / IDE / 工具
+.git
+.gitignore
+.dockerignore
+.vscode/
+.idea/
+.claude/
+.specify/
+
+# Python 依赖与缓存
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node
+node_modules/
+
+# Docker 本地数据卷（compose 起环境后产生）
+postgres_data/
+pgdata/
+redis_data/
+
+# 本地运行产物
+*.log

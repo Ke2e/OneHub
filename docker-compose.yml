@@ -1,6 +1,9 @@
 services:
   api:
-    build: ./backend
+    # T023（US5 一键环境）：context 扩到仓库根，使 Dockerfile 能 COPY alembic/ 与 scripts/seed.py 进镜像（自包含）
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: onehub-api
     ports:
       - "8000:8000"
@@ -10,7 +13,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # T023：容器启动串「alembic 迁移 → 幂等种子（T007，重复启动零副作用）」后 exec uvicorn。
+    # PYTHONPATH=/app：镜像内 project root 即 /app（seed.py 的 backend 相对定位在本布局下不适用）
+    command: ["sh", "-c", "/app/.venv/bin/alembic upgrade head && export PYTHONPATH=/app && /app/.venv/bin/python /app/scripts/seed.py && exec uv run uvicorn app.main:app --host 0.0.0.0 --port 8000"]
 
   pg:
     image: postgres:16-alpine
