@@ -1,5 +1,28 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（Phase 2：T005–T009 + Checkpoint 达成，阻塞解除）
+
+**背景**：Docker 三容器运行中，.env 已建，从 T005 继续 Phase 2（不依赖真实 key）。
+
+**做了什么**：
+
+1. T005 SQLAlchemy 7 表：`app/models/`（tenant/user/api_key/channel/model/usage_record/balance + `__init__.py` 定义 Base 聚合导出），严格按 PROJECT_CONTEXT 第 5 节 DDL（BIGSERIAL/CHAR(64) key_hash/ARRAY(Text) whitelist/UUID request_id 唯一 + idx_usage_key_time 复合索引）
+2. T006 Alembic：`alembic.ini` + `alembic/env.py`（async 引擎，URL 由 Settings 注入：环境变量优先、本地回退 localhost）+ autogenerate 生成 `001_initial`（7 表 + 索引一次建齐，只增不改）→ `alembic upgrade head` 对 pg 执行成功
+3. T007 种子：`scripts/seed.py`（deepseek-main 渠道 `api_key_encrypted=env-injected` + deepseek-chat/deepseek-reasoner 两模型挂渠道；查重式幂等 upsert，sys.path 注入 backend）
+4. T008 错误出口：`app/core/errors.py`（OpenAI 错误结构 `{"error":{message,type,param,code}}`；OpenAIError/AuthenticationError/ModelNotFoundError/RateLimitError/UpstreamError；422→invalid_request_error、未捕获→api_error 零堆栈、401 带 WWW-Authenticate）→ 注册进 create_app
+5. T009 鉴权：`app/core/security.py`（extract_bearer_token + hmac.compare_digest constant-time 比对）+ `tests/unit/test_security.py` 四分支（有效/缺失/值错误/scheme 格式错）
+6. 补错误出口冒烟单测 `tests/unit/test_errors.py`（422/404 model_not_found/500 三类出口结构断言）
+
+**验证（dev-verify 证据）**：
+
+- `alembic upgrade head` → `Running upgrade -> d36075ae03bd`；pg `\dt` 7 表 + `idx_usage_key_time` 全在
+- `uv run python ../scripts/seed.py` 连跑两遍 → channels 1 行 / models 2 行唯一，外键挂接正确
+- `uv run pytest -q` → **10 passed**（冒烟 1 + 鉴权 6 + 错误出口 3）
+- `uv run python -c "from app.main import app"` → OpenAIError/RequestValidationError/Exception handlers 已注册
+- `docker compose up -d --build api` 重建 → `GET /docs` → **200**
+
+**下一步**：Phase 3 T010–T014（US1 非流式 MVP：schemas → Provider 模板方法基类 → DeepSeek 实现 → POST /v1/chat/completions + 错误映射单测）。Phase 3 起需真实 `DEEPSEEK_API_KEY`（.env 填入）。
+
 ## 会话 2026-09-12（Phase 1：T001–T004 + Checkpoint 达成，停机点 2 解除）
 
 **背景**：Asize 确认 plan/tasks，从 T001 开始执行 Phase 1。

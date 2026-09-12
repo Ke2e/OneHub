@@ -9,7 +9,7 @@
 
 ## 当前状态
 
-**W1 · Phase 1（T001–T004）+ Checkpoint 完成**：Asize 已确认 plan/tasks（停机点 2 解除）。Python 3.12 项目初始化（uv.lock 入库）、FastAPI 骨架（应用工厂 + lifespan + config）、compose（api/pg/redis）三容器构建健康、pytest 基建就绪。Checkpoint 证据：`GET http://localhost:8000/docs` → 200。**下一步 Phase 2（T005–T009）**：7 表模型 + Alembic 全量迁移 + 种子 + 错误出口 + 鉴权。
+**W1 · Phase 1（T001–T004）+ Phase 2（T005–T009）完成**：Asize 已确认 plan/tasks（停机点 2 解除）。Python 3.12 项目初始化（uv.lock 入库）、FastAPI 骨架（应用工厂 + lifespan + config）、compose（api/pg/redis）三容器构建健康、pytest 基建就绪。Phase 2：7 表 SQLAlchemy 模型 + Alembic async 迁移（001_initial 建齐 7 表 + idx_usage_key_time）+ 种子脚本（deepseek-main + 2 模型，幂等）+ OpenAI 统一错误出口 + Bearer 鉴权（四分支单测）。Checkpoint 证据：`alembic upgrade head` 成功、种子连跑两遍唯一、`uv run pytest -q` → 10 passed、api 容器重建后 /docs 200。**下一步 Phase 3（T010–T014）**：US1 非流式对话 MVP（schemas → Provider 基类 → DeepSeek 实现 → 网关端点 + 错误映射单测）。
 
 ## 阶段总览
 
@@ -18,8 +18,8 @@
 | # | 任务 | 状态 | 验收标准 |
 |---|------|------|---------|
 | 0 | spec-kit 流程 + AGENTS.md + 三件套 | completed | spec/plan/tasks 齐 + 本三件套就位 |
-| 1 | 脚手架：FastAPI + SQLAlchemy + Alembic + compose（pg/redis） | in_progress | `docker compose up` 后 /docs 可访问 ✅；Alembic 接入属 T006（Phase 2） |
-| 2 | OpenAI 兼容端点 + DeepSeek Provider（两版接口候选对比后定稿） | pending | OpenAI SDK 改 base_url，流式/非流式均能对话 |
+| 1 | 脚手架：FastAPI + SQLAlchemy + Alembic + compose（pg/redis） | completed | `docker compose up` 后 /docs 可访问 ✅；Alembic 接入属 T006（Phase 2）✅ |
+| 2 | OpenAI 兼容端点 + DeepSeek Provider（两版接口候选对比后定稿） | in_progress | OpenAI SDK 改 base_url，流式/非流式均能对话 |
 | 3 | SSE 流式透传 + delta 累计 usage | pending | 流式结束 usage 事件有 token 数 |
 | 4 | teach 检查点：FastAPI async、Pydantic/OpenAPI、适配器模式、httpx、SSE | pending | 讲解通过 |
 
@@ -63,9 +63,13 @@
 | 2026-09-11 | Provider 接口定稿候选 B：模板方法基类（research.md D1） | design-an-interface 两版对比，W1 任务 2 要求 |
 | 2026-09-11 | W1 零新增依赖：渠道密钥走 env，`api_key_encrypted` 存占位，加密方案 W4 走 ADR（research.md D2） | 规避停机点 3 触发，最小改动 |
 | 2026-09-12 | Asize 确认 plan/tasks，停机点 2 解除；从 T001 开始 Phase 1。构建工具定 uv（本机 0.12.7，uv.lock 入库） | 任务 0 决策 |
+| 2026-09-12 | Phase 2 决策三则：① 种子因 DDL 无唯一约束不用 ON CONFLICT，改"查重→插入/同步"实现幂等（规避改 DDL 停机点）；② pytest 增 `pythonpath=["."]` 以便 tests/ 导入 app.*；③ 鉴权不强制 `sk-` 前缀（conftest 的 key 无前缀），"前缀格式"分支 = Authorization scheme 校验 | 执行期工程决策 |
 
 ## 遇到的错误
 
 | 错误 | 尝试次数 | 解决方案 |
 |------|---------|---------|
-| （暂无） | | |
+| seed ON CONFLICT 报 `no unique or exclusion constraint matching`（channels.name 无唯一约束） | 2 | 改查重后再插入；已有行同步关键字段，事务内完成（不改 DDL，规避停机点 3） |
+| alembic/TestClient 读取 UTF-8 中文 ini 报 GBK 解码错 | 2 | alembic.ini 注释改英文（configparser 用 locale 编码读） |
+| pytest 找不到 `app` 模块 | 2 | pyproject `[tool.pytest.ini_options] pythonpath=["."]` |
+| TestClient 触发 500 时直接抛异常 | 2 | `TestClient(..., raise_server_exceptions=False)` 让 ServerErrorMiddleware 转交统一出口 |
