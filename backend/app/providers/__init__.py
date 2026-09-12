@@ -1,0 +1,1 @@
+"""Provider 包：BaseProvider 模板方法基类 + 渠道实现（T011/T012）。"""
