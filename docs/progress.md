@@ -1,5 +1,24 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（Phase 4：T015–T017 + CP4.1 达成，US2 流式 SSE 透传可演示）
+
+**背景**：Phase 3 完成（US1 非流式 MVP 200），Docker 三容器健康，.env 含真实 SenseAudio 渠道 key。从 T015 进入 US2 流式（保护清单，测试先行）。
+
+**做了什么**：
+
+1. T015（RED）测试先行：`tests/unit/test_sse_parser.py` + `tests/fixtures/sse_stream.txt`——五能力全覆盖：data: 前缀剥离 / 空行分隔 / `[DONE]` 终止（后续行不产出）/ 坏 JSON 事件跳过（前后事件不受影响）/ EOF 截断自然收敛；另含多 data: 行拼接与注释/空白行忽略。运行确认 `ModuleNotFoundError: app.services` FAIL 后单独提交 `d77cb29`
+2. T016 实现转 GREEN：`app/services/forward.py` 手写 SSE 解析器（保护清单，禁换库）——`SSELineParser` 同步状态机（feed 增量喂行、空行结算事件、`[DONE]` done、坏 JSON 跳过、finish() EOF 兜底）+ `sse_events()` 异步适配（httpx aiter_lines 直喂）；`base.py` chat_stream() 实现：`client.stream()` + 状态码检查（复用 `_map_upstream_error`）+ 逐事件产出，超时/连接失败映射 504/502。5 passed，全量 22 passed，提交 `ec094bd`
+3. T017 端点：`gateway.py` 增 `stream: true` 分支——`_stream_events()` 事件 dict → `data: {json}\n\n` + `data: [DONE]` 收尾，`StreamingResponse(media_type="text/event-stream")` + `Cache-Control: no-cache` + `X-Accel-Buffering: no`；调用方断连由生成器取消传播终止上游（async with 退出关闭连接）。提交 `6307935`
+4. 验收（dev-verify 证据）：临时 httpx 脚本模拟 SDK 改 base_url 打本机网关 → 上游真实渠道
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **22 passed**（17 存量 + 5 新增 SSE 解析器）
+- 真 key 流式转发（本机 uvicorn :8001，DATABASE_URL 覆盖 localhost）→ `HTTP 200 text/event-stream`、**12 个 data 事件逐块透传**、delta 拼接完整 = "我是 CP4-OK，一个专注高效解决问题的智能助手，随时准备为你提供简洁、准确的帮助。"、`data: [DONE]` 正常收尾 ✅
+- `git log` TDD 时间序：`d77cb29`(test RED) → `ec094bd`(feat GREEN) → `6307935`(端点)
+
+**下一步**：Phase 5 T018–T020（US3 流式 usage：末尾 chunk 携带 token 数，include_usage 注入已在 `_build_payload` 就位，T018 先写 usage 提取测试先 RED）。
+
 ## 会话 2026-09-12（Phase 3：T010–T014 + CP3.1 达成，US1 非流式 MVP 可演示）
 
 **背景**：Phase 3 前置就绪（config 双键名 + env_file 绝对路径，上一会话）。Docker 三容器运行中，.env 含真实渠道 key。
