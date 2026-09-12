@@ -1,5 +1,24 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-12（Phase 5：T018–T020 + SC-002 达成，US3 流式 usage 可用）
+
+**背景**：Phase 4 完成（US2 流式 SSE 透传 12 事件 + [DONE]），Docker 三容器健康，.env 含真实 SenseAudio 渠道 key。从 T018 进入 US3 流式 usage（保护清单，测试先行）。
+
+**做了什么**：
+
+1. T018（RED）测试先行：`tests/unit/test_usage_extract.py` 五项覆盖——末尾 chunk usage 提取 / delta 累计口径（透传不破坏）/ 上游未返 usage 缺省 0 不报错 / EOF 截断合成 0 兜底 / with_usage 异步适配合成事件位次。运行确认 `ImportError: UsageTracker` FAIL 后单独提交 `70563bc`
+2. T019 实现转 GREEN：`forward.py` 手写 usage 提取（保护清单，禁换库）——`UsageTracker` 同步核心（feed 原样透传 + 提取 usage，事件存样例 id/created/model；finish() 未提取到则合成 usage=0 兜底 chunk，choices=[]，位次=流尾最后一个，gateway 的 [DONE] 前）+ `with_usage()` 异步适配包 `sse_events`；`base.py` chat_stream 由 `sse_events(...)` 换 `with_usage(sse_events(...))`。include_usage 注入已在 T011 `_build_payload` 就位（stream=true 无条件注入），未重写。5 passed，提交 `78c68a4`
+3. T020 端到端：`tests/test_e2e_stream.py`——MockTransport 回放两条录制 SSE 流（带 usage / 不带 usage）打 DeepSeekProvider.chat_stream 全级联（真实 httpx stream 协议层 + SSELineParser + UsageTracker）。断言：载荷注入 `stream_options.include_usage=true`（T019 注入端）✅ / 上游带 usage → 仅末尾 chunk usage 非零 12/5/17 且 delta 累计完整（SC-002）✅ / 上游不带 usage → 末尾合成 0/0/0 兜底不报错、delta 原位透传 ✅。3 passed，提交 `941c570`
+4. 调试复盘：① 单测 `test_delta_accumulation_untouched` 自身越界（合成兜底事件 choices=[] 未防御），修测试语义（OpenAI usage chunk 无 delta）非实现问题；② e2e 断言忘算 role 块（content=None）；③ e2e 补 `p.aclose()` 释放连接池消 pending task 警告
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **30 passed**（22 存量 + 5 usage 提取 + 3 e2e）
+- git log TDD 时间序：`70563bc`(test RED) → `78c68a4`(feat GREEN) → `941c570`(e2e)
+- 真 key 流式验收（临时 httpx 脚本模拟 SDK 改 base_url 打本机 :8001，脚本已删）：**HTTP 200 text/event-stream**、3 个 data 事件、`[DONE]` 收尾、**末尾 chunk usage {prompt_tokens: 14, completion_tokens: 5, total_tokens: 19} 全非零且 total=14+5**、delta 拼接完整=USAGE-OK → **ACCEPT SC-002**（SenseAudio 真实支持 include_usage，上游 usage 原样透传；合成 0 兜底路径由 T018/T020 自动化覆盖）
+
+**下一步**：Phase 6 T021–T022（US4 GET /v1/models 模型列表，仅依赖 Phase 2）+ W1 teach 检查点。
+
 ## 会话 2026-09-12（Phase 4：T015–T017 + CP4.1 达成，US2 流式 SSE 透传可演示）
 
 **背景**：Phase 3 完成（US1 非流式 MVP 200），Docker 三容器健康，.env 含真实 SenseAudio 渠道 key。从 T015 进入 US2 流式（保护清单，测试先行）。
