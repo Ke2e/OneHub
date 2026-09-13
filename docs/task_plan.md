@@ -29,7 +29,7 @@
 |---|------|------|---------|
 | 1 | 租户-用户-Key 三级模型 + 管理端 JWT；SK- Key 生成/哈希/白名单 | completed | 模型与 CRUD 可用：管理面 register/login（JWT HS256 签发）+ keys CRUD（sk- 生成/SHA-256 哈希入库/白名单/软删）+ 租户隔离 ✅ |
 | 2 | 鉴权中间件（哈希校验→状态/白名单/过期） | completed | 全分支单测 ✅：表鉴权（hash_sk_key SHA-256 → key_hash 查表 → status/expires_at）六分支 + 白名单纯函数四分支 + 端点 404（58 passed，真机 7 断言 ALL_PASS）|
-| 3 | 令牌桶（Lua）+ Semaphore（dev-tdd 先写测试） | pending | 超限 429+Retry-After，并发无竞态 |
+| 3 | 令牌桶（Lua）+ Semaphore（dev-tdd 先写测试） | completed | 超限 429+Retry-After，并发无竞态 ✅：手写 Redis Lua 令牌桶（RPM 请求 1 / TPM 估算 token，双维度短路合并）+ 进程内并发槽（try_acquire/release 配对，流式 finally 释放）→ 桶拒/槽满均 429 + Retry-After 头（79 passed，真 Redis 冒烟 5 项 IO ALL_PASS：满桶放行/Retry-After 计算/补 token 公式对拍/28 并发 4 桶恰 20 放行零超发/双维度组合） |
 | 4 | 幂等键支持 | pending | 重复请求不重复转发 |
 | 5 | teach 检查点：API Key 体系、限流四算法、Redis 原子性/Lua、幂等 | pending | 讲解通过 |
 | 6 | 📌 简历上墙点 1 + security-best-practices 审查 | pending | 简历初版 + 审查报告 |
@@ -74,6 +74,8 @@
 | 2026-09-12 | Phase 8 执行期设计（T025）：验收脚本用 `scripts/acceptance/`（package.json + verify.mjs，openai ^7.15.0），**独立 `GATEWAY_BASE_URL` 变量**——根 .env 的 `BASE_URL` 是渠道上游键名（Phase 3 决策），直接读会污染 SDK 目标地址（首轮全 404 实测根因）；只从 .env 提取 `GATEWAY_API_KEY`。模型 ID 用种子实际 ID（quickstart 断言 4 的 deepseek-chat 是旧 ID，不照抄）。收尾 `client.close()`+`process.exitCode` 而非 `process.exit()`（Windows/libuv 未关句柄断言崩溃）。SC-004 定义一个关键语义：未知 model = HTTP 404 + `type=invalid_request_error` + `code=model_not_found`（OpenAI 官方语义，type 不是 model_not_found） | 验收脚本实测 5/5 exit 0 + SC-004 三分支 PASS（httpx 防 GBK） |
 | 2026-09-12 | 当前状态进 W2 | W1 收尾三份提交落地（408b786/24a18f4/13b4ed7），遗留 1 关闭 | — |
 | 2026-09-12 | W2 依赖决策经 ADR-0001（docs/adr/0001-w2-jwt-redis-deps.md）Asize 批准：引入 pyjwt（管理面 JWT）+ redis-py（令牌桶 Lua/幂等键载体）；JWT/Redis 客户端非保护清单项目，算法本体（Lua 令牌桶）仍手写；任务 1 范围定 min：auth + keys CRUD | 停机点 3 解除；uv add redis pyjwt 落 pyproject + uv.lock + 容器镜像自动携带 |
+| 2026-09-13 | W2 任务 3 执行期设计（dev-tdd）：限流落 `app/services/rate_limit.py`——TokenBucket 封装 Redis EVAL（KEYS=rate:{key_id}:{dim}，ARGV=capacity/rate/s/now/requested，HSET t+ts+EXPIRE 3600，返回 {1,0} 放行 / {0,wait} 拒绝，wait=ceil((requested-t)/rate) 兜底 1s）；`_refill` 纯函数（min(capacity, t+max(0,now-ts)*rate)）供单测公式对拍。并发槽不引入 asyncio.Semaphore 的 try-acquire 限制（无非阻塞原语），改自维护计数 `_in_flight`——单线程协作调度下检查→自增无 await 间隙，等价 Semaphore 语义。端点接入：`RateLimitError` 扩展 `retry_after` → `_openai_error_handler` 输出 `Retry-After` 头；流式槽位在 `_stream_events` finally 释放（断连不泄漏）；main lifespan 注入 Redis 单例（decode_responses=True，aclose 配对） | 单测依赖注入用 FastAPI `dependency_overrides`（monkeypatch 对路由注册期捕获的依赖引用无效，500 实测根因）；event_loop fixture 被 pytest-asyncio 0.26 弃用 → 删除后偶发 "no current event loop" 消失 |
+| 2026-09-13 | **W2 任务 3 完成**：提交链 08a58fb（fix test event_loop）→ bf644ff（feat rate-limit）→ b655dcb（test rate-limit），79 passed（58 → 79）；真 Redis 冒烟 5 项 IO 全过（满桶放行/Retry-After ceil/补 token 对拍/4 桶 28 并发恰 20 放行零超发/双维度合并短路） | 下一步任务 4：幂等键（Idempotency-Key，Redis 存储手写，保护清单） |
 
 ## 遇到的错误
 

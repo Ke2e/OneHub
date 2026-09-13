@@ -1,5 +1,25 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-13（W2 任务 3：令牌桶 Lua + Semaphore 并发限流达成，79 passed）
+
+**背景**：任务 2 完成（58 passed）。任务 3 目标 = 令牌桶（Redis Lua 手写，保护清单）+ Semaphore 并发限流——超限 429 + Retry-After，并发无竞态；dev-tdd 先写测试。
+
+**做了什么**：
+
+1. TDD 任务 3：
+   - RED `test_rate_limit.py`（16 用例）+ `test_gateway_rate_limit.py`（4 用例）：Lua 公式 `_refill` 纯函数对拍锚点（封顶/比例/时钟倒退/首用）、TokenBucket ARGV 组装与结果 cast（`[1,0]`→(True,0) / `[0,wait]`→(False,wait)）、双维度合并（RPM 拒绝短路不查 TPM / TPM 拒绝 / tpm_limit=0 只查 RPM）、Semaphore max_concurrent 上限与 acquire-release 配对（release 后可再进）、estimate_tokens 粗估（字符 //4 兜底 1）；端点集成用 FastAPI `dependency_overrides` 换 FakeLimiter（monkeypatch 对路由注册期捕获的依赖引用无效，首跑 500 实测根因）
+   - GREEN `rate_limit.py`：手写 `TOKEN_BUCKET_LUA`（KEYS=rate:{key_id}:{dim}，ARGV=capacity/rate/s/now/requested；HSET t+ts + EXPIRE 3600；有 token → 扣减返 {1,0}，无 token → 返 {0,wait}，wait=ceil((requested-t)/rate) 兜底 1s——EVAL 内 read-modify-write 原子，多请求共享同桶零竞态）；`TokenBucket.allow` 封装 EVAL + 返回值解析；`RateLimiter.check` 双维度合并短路 + `try_acquire/release` 并发槽——自维护计数 `_in_flight`（asyncio.Semaphore 无非阻塞原语，单线程协作调度下检查→自增无 await 间隙，等价 try-acquire 语义）+ `estimate_tokens`（转发前粗估，真实 usage 计费 W3）
+   - 端点接入：`RateLimitError` 扩展 `retry_after` → `_openai_error_handler` 输出 `Retry-After` 头；gateway.chat_completions 在转发前 check（桶拒/槽满均 429）；流式 `_stream_events` finally 释放槽位（断连不泄漏），非流式 try/finally 即释；main lifespan 注入 `aioredis.Redis.from_url(decode_responses=True)` 单例，aclose 配对
+2. 测试基建修复：conftest.py 删弃用的 session 级自定义 `event_loop` fixture（pytest-asyncio 0.26 弃用，pyproject 已设 `asyncio_default_fixture_loop_scope="function"`）→ 消除 async 测试偶发 `RuntimeError: no current event loop`
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **79 passed**（58 基线 + 21 新增，全绿两次复跑稳定；此前"58 passed"日志为旧运行）
+- 真 Redis 冒烟（`smoke_rate_limit.py` 用完即删，onehub-redis 容器）：**RATE_LIMIT_SMOKE ALL_PASS**——IO1 满桶连续 5 放行 + 第 6 拒绝 wait=1；IO2 大额 800/1000 二次拒绝 wait=ceil(600/10)=60；IO3 sleep 3.2s 补 token 与 `_refill` 公式对拍（误差 <0.1）；IO4 4 桶 × 28 并发 EVAL 原子性——恰 20 放行零超发；IO5 双维度组合（RPM 第 3 次拒绝）
+- 提交链：`08a58fb`（fix test event_loop）→ `bf644ff`（feat rate-limit）→ `b655dcb`（test rate-limit）
+
+**下一步**：W2 任务 4 幂等键（Idempotency-Key，Redis 存储手写，保护清单）——重复请求不重复转发。
+
 ## 会话 2026-09-12（W2 任务 2：网关面鉴权中间件表迁移达成，58 passed）
 
 **背景**：任务 1 完成（50 passed）。任务 2 目标 = 鉴权中间件（哈希校验→状态/白名单/过期）全分支单测——require_gateway_api_key 从 .env 固定 key（GATEWAY_API_KEY 配置比对）迁到 api_keys 表。
