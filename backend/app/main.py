@@ -11,6 +11,7 @@ from app.api.v1.gateway import router as gateway_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.providers.deepseek import DeepSeekProvider
+from app.services.idempotency import IdempotencyService
 from app.services.rate_limit import RateLimiter
 
 
@@ -38,10 +39,15 @@ async def lifespan(app: FastAPI):
     app.state.rate_limiter = RateLimiter(
         aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
     )
+    # W2 任务 4：幂等键单例（Redis Lua 原子占位 + 响应缓存），独立连接与限流解耦
+    app.state.idempotency = IdempotencyService(
+        aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
+    )
     try:
         yield
     finally:
         await app.state.rate_limiter.aclose()
+        await app.state.idempotency.aclose()
         await app.state.deepseek_provider.aclose()
         await engine.dispose()
 

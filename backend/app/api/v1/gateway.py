@@ -19,6 +19,7 @@ from app.core.security import require_gateway_api_key
 from app.models import ApiKey, Model
 from app.providers.deepseek import DeepSeekProvider
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
+from app.services.idempotency import IdempotencyOutcome, IdempotencyService
 from app.services.keys import check_model_whitelist
 from app.services.rate_limit import RateLimiter, estimate_tokens
 
@@ -28,6 +29,11 @@ router = APIRouter(prefix="/v1")
 def get_rate_limiter(request: Request) -> RateLimiter:
     """限流单例依赖：lifespan 构造（持有 Redis 连接），端点经 Depends 注入。"""
     return request.app.state.rate_limiter
+
+
+def get_idempotency(request: Request) -> IdempotencyService:
+    """幂等键单例依赖：lifespan 构造（与限流共 Redis 连接，W2 任务 4）。"""
+    return request.app.state.idempotency
 
 
 async def _stream_events(
@@ -84,6 +90,7 @@ async def chat_completions(
     req: ChatCompletionRequest,
     api_key: ApiKey = Depends(require_gateway_api_key),
     limiter: RateLimiter = Depends(get_rate_limiter),
+    idempotency: IdempotencyService = Depends(get_idempotency),
 ) -> ChatCompletionResponse | StreamingResponse:
     """对话端点：非流式返回完整 Chat Completion；流式返回 text/event-stream 逐块直通。"""
 
@@ -109,13 +116,25 @@ async def chat_completions(
     )
     if not allowed:
         raise RateLimitError(retry_after=retry_after or 1)
+
+    # 4) 幂等键（W2 任务 4，限流后、转发前）：仅非流式生效（流式 SSE 不缓存）。
+    #    命中缓存直接回放首次响应（不转发、不占并发槽）；占位成功继续；
+    #    之后任何失败路径都要 cancel 释放占位，否则后续请求会一直等 409。
+    idem_key = request.headers.get("Idempotency-Key") if not req.stream else None
+    if idem_key:
+        outcome, cached_body = await idempotency.get_or_acquire(api_key.id, idem_key)
+        if outcome == IdempotencyOutcome.CACHED:
+            return cached_body
+
     if not limiter.try_acquire():
+        if idem_key:
+            await idempotency.cancel(api_key.id, idem_key)  # 被 429 挡回，释放占位可重试
         raise RateLimitError(retry_after=1)
 
-    # 4) 渠道实例化：app.state 单例（lifespan 构造，连接池复用，关闭时 aclose）
+    # 5) 渠道实例化：app.state 单例（lifespan 构造，连接池复用，关闭时 aclose）
     provider: DeepSeekProvider = request.app.state.deepseek_provider
 
-    # 5) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
+    # 6) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
     if req.stream:
         return StreamingResponse(
             _stream_events(limiter, provider, req),
@@ -126,6 +145,13 @@ async def chat_completions(
             },
         )
     try:
-        return await provider.chat(req)
+        response = await provider.chat(req)
+    except BaseException:
+        if idem_key:
+            await idempotency.cancel(api_key.id, idem_key)  # 转发失败，撤销占位可重试
+        raise
     finally:
         limiter.release()  # 非流式同步完成，槽位即释
+    if idem_key:
+        await idempotency.complete(api_key.id, idem_key, response)  # 成功 → 写缓存
+    return response
