@@ -1,5 +1,25 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-13（W2 任务 4：幂等键达成，92 passed + 真 Redis 冒烟 5 项 IO ALL_PASS）
+
+**背景**：任务 3 完成（79 passed）。任务 4 目标 = 幂等键（Idempotency-Key）——重复请求不重复转发（Redis 存储，手写，保护清单）；dev-tdd 先写测试。与 api_keys 表无关，纯 Redis 层。
+
+**做了什么**：
+
+1. TDD 任务 4：
+   - RED `test_idempotency.py`（7 用例）+ `test_gateway_idempotency.py`（2 用例）：三态判定（cached 回放 / claimed 轮询 / acquired 得主）、轮询接管（得主写缓存回放 / 得主撤销占位转接管 / 超时 409 conflict_error）、complete 写缓存 EX=24h + 删占位、cancel 仅删占位不写缓存；端点集成用 FakeRedis + `dependency_overrides` 换 FakeIdempotency（回放不转发 / 槽满 429 撤销占位可重试）
+   - GREEN `app/services/idempotency.py`：手写 `IDEMPOTENCY_LUA`（KEYS[1]=缓存键 / KEYS[2]=占位键，ARGV=uuid + claim TTL；GET 缓存 → GET 占位 → SET NX 语义占位，EVAL 内 read-modify-write 原子——并发同 key 共享同一 Redis，脚本执行期间无并发间隙，防双转发）；`IdempotencyService.get_or_acquire` 三态入口（CLAIMED 内部短轮询消化不外显）、`_wait_result`（轮询缓存可回放 / 占位消失接管转发 / 超时 5s 抛 ConflictError 409）、`complete`（写缓存 EX=24h + 删占位）、`cancel`（删占位不写缓存——失败/429 释放可重试）、`aclose`
+   - 端点接入（gateway.chat_completions，限流后、转发前）：仅非流式生效（流式 SSE 不缓存），`Idempotency-Key` 头 → get_or_acquire；CACHED 直接回放（不转发不占并发槽）；已在上游抛错路径（except BaseException）与 try_acquire 槽满分支补 `cancel` 释放占位；转发成功 → `complete`；main lifespan 增 `IdempotencyService` 单例（独立 Redis 连接，aclose 与 rate_limiter 配对）
+2. 测试修正（单独 fix(test) 提交）：Lua 真实返回 `'claimed'` 对齐测试预期（首写 `'claim'` 不一致）；FakeRedis 模拟占位键写入语义；ApiKey fixture 补显式 `id=1`（鉴权走 scalar 不 commit，自增分配不会发生）；complete 断言改查 FakeRedis.data
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **92 passed**（79 基线 + 13 新增，全绿；任务 4 用例 9 + 相关调整冗余消除）
+- 真 Redis 冒烟（`smoke_idempotency.py` 用完即删，onehub-redis 容器 db 15 隔离）：**IDEMPOTENCY_SMOKE ALL_PASS**——IO1 新 key 得主 → complete → 同 key 回放缓存（body 一致）；IO2 **10 并发同 key 恰 1 得主其余 9 回放同一响应（防双转发核心实证）**；IO3 得主 cancel → 占位消失 → 后续请求重新占位成功；IO4 Lua 纯脚本语义（缓存命中立即 cached 且不写占位键）
+- 提交链：`46105bc`（test RED）→ `3bcbf2e`（feat GREEN）→ `951459e`（fix test 对齐 claimed 语义 + 显式主键）
+
+**下一步**：W2 任务 5 teach 材料（已随本会话产出至 notes.md 五讲）+ 任务 6 简历上墙点 1 + security 审查。
+
 ## 会话 2026-09-13（W2 任务 3：令牌桶 Lua + Semaphore 并发限流达成，79 passed）
 
 **背景**：任务 2 完成（58 passed）。任务 3 目标 = 令牌桶（Redis Lua 手写，保护清单）+ Semaphore 并发限流——超限 429 + Retry-After，并发无竞态；dev-tdd 先写测试。
