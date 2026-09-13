@@ -62,9 +62,9 @@
 
 - `cd scripts/acceptance && npm run verify` → **5/5 [PASS]，exit 0**：
   1. 非流式：`choices[0].message.content` 非空 + `usage.prompt_tokens > 0`（SC-001）
-  2+3. 流式：delta 拼接完整（含 ACC-PASS-OK）+ 正常收尾（finish_reason=stop，[DONE] 由网关收尾）；末尾 chunk usage **prompt/completion/total 全非零正整数**（SC-002，调用方零配置）
-  4. models list `data[]` 含两实际 ID（deepseek-v4-flash-0731、senseaudio-s2）（US4）
-  5. 错 key → 401 + `error.message` 存在（SC-004）
+     2+3. 流式：delta 拼接完整（含 ACC-PASS-OK）+ 正常收尾（finish_reason=stop，[DONE] 由网关收尾）；末尾 chunk usage **prompt/completion/total 全非零正整数**（SC-002，调用方零配置）
+  2. models list `data[]` 含两实际 ID（deepseek-v4-flash-0731、senseaudio-s2）（US4）
+  3. 错 key → 401 + `error.message` 存在（SC-004）
 - SC-004 错误抽查（httpx，防 PowerShell GBK）三分支全 PASS：
   - 未知 model（带 key）→ **404**，OpenAI 结构 `type=invalid_request_error` + `code=model_not_found`（对齐官方语义）
   - 无 key / 错 key → **401** `type=authentication_error`（`code=null` 为官方认证错误常规形态，T009 既定实现）
@@ -262,7 +262,6 @@
 1. Phase 1 T001–T004：骨架 + compose + pytest 基建 → checkpoint（/docs 200）
 2. Phase 2 T005–T009：7 表 + 迁移 + 种子 + 错误出口 + 鉴权
 3. 后续按 tasks.md 依赖序推进，MVP = US1（非流式）
-
 
 ## 会话 2026-09-10（W1 任务 0，spec-kit 启动）
 
