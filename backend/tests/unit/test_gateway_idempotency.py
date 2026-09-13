@@ -93,6 +93,7 @@ def client(monkeypatch):
     factory.shared = FakeSession(
         [
             ApiKey(
+                id=1,  # 显式主键：鉴权走 scalar 不 commit，自增分配不会发生
                 tenant_id=1,
                 name="test-key",
                 key_prefix=VALID_KEY[:10],

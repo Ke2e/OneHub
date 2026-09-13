@@ -31,8 +31,11 @@ class FakeRedis:
 
     async def eval(self, script, numkeys, *args):
         self.calls.append(("eval", numkeys, args))
-        r = self.eval_result
-        return r() if callable(r) else r
+        r = self.eval_result() if callable(self.eval_result) else self.eval_result
+        if r and r[0] == "claimed":
+            # 对齐 Lua 语义：占位成功/判定的前提是占位键存在（args[1]=KEYS[2]）
+            self.data.setdefault(args[1], args[2])
+        return r
 
     async def get(self, key):
         self.calls.append(("get", key))
@@ -96,7 +99,7 @@ def test_acquired_when_new():
 
 def test_claimed_polls_until_result_cached():
     """Lua 返 claim（并发同 key）→ 轮询缓存；得主写缓存后回放。"""
-    redis = FakeRedis(eval_result=["claim", "other-uuid"])
+    redis = FakeRedis(eval_result=["claimed", "other-uuid"])
     svc = _service(redis, poll_interval=0.005)
     payload = _payload()
 
@@ -116,7 +119,7 @@ def test_claimed_polls_until_result_cached():
 
 def test_claimed_takes_over_when_claim_dropped():
     """轮询中占位键消失（得主失败已撤销）→ 转 (ACQUIRED, None) 由当前请求接管。"""
-    redis = FakeRedis(eval_result=["claim", "other-uuid"])
+    redis = FakeRedis(eval_result=["claimed", "other-uuid"])
     svc = _service(redis, poll_interval=0.005)
     base, claim = f"idem:1:{VALID}", f"idem:1:{VALID}:claim"
 
@@ -133,7 +136,7 @@ def test_claimed_takes_over_when_claim_dropped():
 
 def test_claimed_timeout_raises_409():
     """轮询超时仍未出结果 → 409 conflict_error（得主在途太久，调用方应重试）。"""
-    redis = FakeRedis(eval_result=["claim", "other-uuid"])
+    redis = FakeRedis(eval_result=["claimed", "other-uuid"])
     svc = _service(redis, wait_timeout=0.05, poll_interval=0.02)
 
     with pytest.raises(OpenAIError) as ei:
@@ -146,19 +149,19 @@ def test_claimed_timeout_raises_409():
 
 def test_complete_sets_cache_with_ttl_and_deletes_claim():
     """得主转发完成：写缓存（EX=24h 窗口）+ 删除占位。"""
+    import json
+
     redis = FakeRedis()
     svc = _service(redis)
     payload = _payload()
     asyncio.run(svc.complete(key_id=1, idem_key=VALID, payload=payload))
     ops = [c[0] for c in redis.calls]
     assert ops == ["set", "delete"]
-    key, value, ex = redis.calls[0]
+    _, key, ex = redis.calls[0]
     assert key == f"idem:1:{VALID}"
     assert ex == 24 * 3600
-    import json
-
-    assert json.loads(value) == payload
-    assert redis.calls[1][1] == f"idem:1:{VALID}:claim"
+    assert json.loads(redis.data[key]) == payload
+    assert redis.calls[1] == ("delete", f"idem:1:{VALID}:claim")
     assert f"idem:1:{VALID}:claim" not in redis.data
 
 
