@@ -1,5 +1,23 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-13（W2 任务 6：简历上墙点 1 + security-best-practices 审查达成，W2 阶段交付收口）
+
+**背景**：任务 4 完成（92 passed）、任务 5 teach 材料产出。任务 6 目标 = 简历上墙点 1 初版 + security-best-practices 审查报告。
+
+**做了什么**：
+
+1. security-best-practices 主动审计（docs/security_review_w2.md）：按 skill 的 FastAPI 安全规范（OWASP 对齐）逐规则核查 W1–W2 全部代码 + 部署 + 依赖锁——审计范围 10 个入口文件（app 工厂/鉴权/管理面/网关面/限流/幂等/错误出口/部署/锁文件）+ uv.lock 版本取证（starlette 1.6.0 / fastapi 0.141.1 / uvicorn 0.52.4，均远超历史 CVE 修复线）
+2. 审查结论：**14 项规则通过**（部署禁 reload/debug、鉴权统一依赖、Bearer 无 URL 令牌、PBKDF2+盐+常时比对、JWT 算法白名单、对象级租户隔离、无 cookie 无 CSRF 面、schema 化输入、SQL/命令注入零面、SSRF 无可控 URL、CORS 未放通、依赖补丁、密钥红线）——**未发现 Critical/High 可利用漏洞**；发现 2 项 Medium（/docs 管理面公开暴露、Redis 无 requirepass 且 6379 全主机暴露）+ 6 项 Low/观察（secret_key 默认值 change-me 缺守卫、无请求体大小上限、无安全响应头、PBKDF2 迭代 100k<OWASP 600k、JWT TTL 12h 无角色细分、LoginRequest 无长度下限）；保护清单四项（令牌桶/幂等/SSE/usage）核查均无注入面，**无换库简化类建议需要处理**
+3. 简历上墙点 1 初版（docs/resume_draft.md）：W1–W2 成果四块（① OpenAI 协议兼容网关链路含手写 SSE/usage ② 多租户 SK-Key 鉴权体系 [手写] ③ Redis 手写令牌桶 + 并发控制 [手写] ④ 幂等键防重复转发 [手写]）+ 量化证据表（92 passed、真机 200/流式逐块透传、限流+幂等 10 项 IO 冒烟 ALL_PASS、npm verify 5/5、一键部署幂等），数字全部有命令级证据不虚构；含面试 K/A/P 深挖准备指针与 W3/W4 待办（压测数字入上墙点 2）
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **92 passed**（回归确认，无代码改动）
+- 审查报告与简历初版已落盘 docs/
+- 提交：本会话随 docs 提交（见下）
+
+**下一步**：W2 阶段 1-4/6 交付收口（任务 5 teach 讲解按 Asize 拍板延后集中自验）。进 W3 计费引擎——任务 1 models 定价表 CRUD + 余额预检（Redis，不查库，不足返 402）。
+
 ## 会话 2026-09-13（W2 任务 4：幂等键达成，92 passed + 真 Redis 冒烟 5 项 IO ALL_PASS）
 
 **背景**：任务 3 完成（79 passed）。任务 4 目标 = 幂等键（Idempotency-Key）——重复请求不重复转发（Redis 存储，手写，保护清单）；dev-tdd 先写测试。与 api_keys 表无关，纯 Redis 层。

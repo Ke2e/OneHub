@@ -31,8 +31,8 @@
 | 2 | 鉴权中间件（哈希校验→状态/白名单/过期） | completed | 全分支单测 ✅：表鉴权（hash_sk_key SHA-256 → key_hash 查表 → status/expires_at）六分支 + 白名单纯函数四分支 + 端点 404（58 passed，真机 7 断言 ALL_PASS）|
 | 3 | 令牌桶（Lua）+ Semaphore（dev-tdd 先写测试） | completed | 超限 429+Retry-After，并发无竞态 ✅：手写 Redis Lua 令牌桶（RPM 请求 1 / TPM 估算 token，双维度短路合并）+ 进程内并发槽（try_acquire/release 配对，流式 finally 释放）→ 桶拒/槽满均 429 + Retry-After 头（79 passed，真 Redis 冒烟 5 项 IO ALL_PASS：满桶放行/Retry-After 计算/补 token 公式对拍/28 并发 4 桶恰 20 放行零超发/双维度组合） |
 | 4 | 幂等键支持 | completed | 重复请求不重复转发 ✅：非流式请求带 Idempotency-Key → Redis Lua 原子占位防并发双转发（手写，保护清单）→ 响应缓存回放（TTL 24h）→ 得主失败撤销可重试 / 超时 409；92 passed + 真 Redis 冒烟 5 项 IO ALL_PASS（10 并发同 key 恰 1 得主其余回放） |
-| 5 | teach 检查点：API Key 体系、限流四算法、Redis 原子性/Lua、幂等 | pending | 讲解通过 |
-| 6 | 📌 简历上墙点 1 + security-best-practices 审查 | pending | 简历初版 + 审查报告 |
+| 5 | teach 检查点：API Key 体系、限流四算法、Redis 原子性/Lua、幂等 | pending（材料已产出） | 讲解通过（Asize 已拍板：全部 teach 检查点延后至项目完成集中自验；W2 五讲材料已入 docs/notes.md） |
+| 6 | 📌 简历上墙点 1 + security-best-practices 审查 | completed | 简历初版（docs/resume_draft.md）+ 审查报告（docs/security_review_w2.md）✅ |
 
 ### W3 计费引擎
 
@@ -77,6 +77,7 @@
 | 2026-09-13 | W2 任务 3 执行期设计（dev-tdd）：限流落 `app/services/rate_limit.py`——TokenBucket 封装 Redis EVAL（KEYS=rate:{key_id}:{dim}，ARGV=capacity/rate/s/now/requested，HSET t+ts+EXPIRE 3600，返回 {1,0} 放行 / {0,wait} 拒绝，wait=ceil((requested-t)/rate) 兜底 1s）；`_refill` 纯函数（min(capacity, t+max(0,now-ts)*rate)）供单测公式对拍。并发槽不引入 asyncio.Semaphore 的 try-acquire 限制（无非阻塞原语），改自维护计数 `_in_flight`——单线程协作调度下检查→自增无 await 间隙，等价 Semaphore 语义。端点接入：`RateLimitError` 扩展 `retry_after` → `_openai_error_handler` 输出 `Retry-After` 头；流式槽位在 `_stream_events` finally 释放（断连不泄漏）；main lifespan 注入 Redis 单例（decode_responses=True，aclose 配对） | 单测依赖注入用 FastAPI `dependency_overrides`（monkeypatch 对路由注册期捕获的依赖引用无效，500 实测根因）；event_loop fixture 被 pytest-asyncio 0.26 弃用 → 删除后偶发 "no current event loop" 消失 |
 | 2026-09-13 | **W2 任务 3 完成**：提交链 08a58fb（fix test event_loop）→ bf644ff（feat rate-limit）→ b655dcb（test rate-limit），79 passed（58 → 79）；真 Redis 冒烟 5 项 IO 全过（满桶放行/Retry-After ceil/补 token 对拍/4 桶 28 并发恰 20 放行零超发/双维度合并短路） | 下一步任务 4：幂等键（Idempotency-Key，Redis 存储手写，保护清单） |
 | 2026-09-13 | **W2 任务 4 执行期设计（dev-tdd）**：幂等落 `app/services/idempotency.py`——双键设计 `idem:{key_id}:{ik}`（响应缓存，EX=24h 幂等窗口）+ `:claim`（在途占位，EX=30s 兜底崩溃残留）；手写 `IDEMPOTENCY_LUA`（GET 缓存 → GET 占位 → SET 占位 return {status,value}，EVAL 内 read-modify-write 原子防并发双转发）；三态 `cached 回放 / claimed 轮询 / acquired 得主`，CLAIMED 在 `_wait_result` 内消化（得主写缓存→回放 / 占位消失→接管转发 / 超时 5s→409）；端点接入在限流后、转发前，仅非流式生效（流式 SSE 缓存=重放整段事件流成本高收益低，忽略该头）；失败路径（上游抛错 + 槽满 429）一律 `cancel` 释放占位否则后来者永久 409；不校验同 key 不同 body（Stripe 同款假设，信任调用方唯一 key 唯一请求） | 提交链 46105bc(test RED)→3bcbf2e(feat GREEN)→951459e(fix test)；92 passed（79→92）；真 Redis 冒烟 IO 全过（缓存回放/10 并发恰 1 得主/撤销可重试/Lua 语义对拍） |
+| 2026-09-13 | **W2 任务 6 产出**：security-best-practices 审查（docs/security_review_w2.md）——FastAPI 安全规范主动审计，未发现 Critical/High 可利用漏洞；2 项 Medium（/docs 公开暴露、Redis 无认证暴露）+ 6 项 Low/观察（secret_key 默认值守卫、body 无大小上限、无安全响应头、PBKDF2 100k 迭代、JWT TTL 12h、LoginRequest 无下限）；保护清单核查四组件均无注入面。简历初版（docs/resume_draft.md）：W1–W2 成果四块（协议兼容链路 / SK-Key 鉴权 / Redis 限流 / 幂等键）+ 量化证据表，全部数字有命令级证据 | W2 阶段 1-4/6 达成交付；teach 材料已产出待集中自验；下一步进 W3 计费引擎（任务 1 models 定价 + 余额预检） |
 
 ## 遇到的错误
 
