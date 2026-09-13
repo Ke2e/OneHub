@@ -59,14 +59,23 @@ class ModelNotFoundError(OpenAIError):
 
 
 class RateLimitError(OpenAIError):
-    """上游限流 → 429（语义保留给调用方）。"""
+    """上游限流 → 429（语义保留给调用方）。
 
-    def __init__(self, message: str = "rate limit exceeded") -> None:
+    retry_after（可选）：指定时响应携带 `Retry-After` 头（W2 任务 3 网关自身限流，
+    告知调用方重试等待秒数）。
+    """
+
+    def __init__(
+        self,
+        message: str = "rate limit exceeded",
+        retry_after: Optional[int] = None,
+    ) -> None:
         super().__init__(
             message=message,
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             error_type="rate_limit_error",
         )
+        self.retry_after = retry_after
 
 
 class ConflictError(OpenAIError):
@@ -104,12 +113,16 @@ def _body(message: str, error_type: str, param: Optional[str], code: Optional[st
 
 
 async def _openai_error_handler(request: Request, exc: OpenAIError) -> JSONResponse:
-    """自定义异常 → 直接映射。"""
-    headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == status.HTTP_401_UNAUTHORIZED else None
+    """自定义异常 → 直接映射；401 带 WWW-Authenticate，限流（带 retry_after）带 Retry-After。"""
+    headers: dict[str, str] = {}
+    if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+        headers["WWW-Authenticate"] = "Bearer"
+    if isinstance(exc, RateLimitError) and exc.retry_after is not None:
+        headers["Retry-After"] = str(exc.retry_after)
     return JSONResponse(
         status_code=exc.status_code,
         content=_body(exc.message, exc.error_type, exc.param, exc.code),
-        headers=headers,
+        headers=headers or None,
     )
 
 

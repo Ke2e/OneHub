@@ -14,27 +14,39 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ModelNotFoundError
+from app.core.errors import ModelNotFoundError, RateLimitError
 from app.core.security import require_gateway_api_key
 from app.models import ApiKey, Model
 from app.providers.deepseek import DeepSeekProvider
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
 from app.services.keys import check_model_whitelist
+from app.services.rate_limit import RateLimiter, estimate_tokens
 
 router = APIRouter(prefix="/v1")
 
 
+def get_rate_limiter(request: Request) -> RateLimiter:
+    """限流单例依赖：lifespan 构造（持有 Redis 连接），端点经 Depends 注入。"""
+    return request.app.state.rate_limiter
+
+
 async def _stream_events(
-    provider: DeepSeekProvider, req: ChatCompletionRequest
+    limiter: RateLimiter,
+    provider: DeepSeekProvider,
+    req: ChatCompletionRequest,
 ) -> AsyncIterator[str]:
     """流式透传：上游事件 dict → SSE 行（data: {json}\n\n），[DONE] 正常收尾。
 
     坏 JSON 已在解析器层跳过；调用方断连时本生成器被取消，provider 的 async with
-    退出并关闭上游连接（T016「断开检测终止上游」，无额外代码）。
+    退出并关闭上游连接（T016「断开检测终止上游」，无额外代码）。finally 释放限流
+    并发槽——流式期间槽位由本生成器持有，响应发完或断连都不泄漏。
     """
-    async for chunk in provider.chat_stream(req):
-        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-    yield "data: [DONE]\n\n"
+    try:
+        async for chunk in provider.chat_stream(req):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+    finally:
+        limiter.release()
 
 
 @router.get("/models")
@@ -71,6 +83,7 @@ async def chat_completions(
     request: Request,
     req: ChatCompletionRequest,
     api_key: ApiKey = Depends(require_gateway_api_key),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> ChatCompletionResponse | StreamingResponse:
     """对话端点：非流式返回完整 Chat Completion；流式返回 text/event-stream 逐块直通。"""
 
@@ -89,17 +102,30 @@ async def chat_completions(
     if not check_model_whitelist(api_key, req.model):
         raise ModelNotFoundError()
 
-    # 3) 渠道实例化：app.state 单例（lifespan 构造，连接池复用，关闭时 aclose）
+    # 3) 限流（W2 任务 3）：RPM/TPM 双维度令牌桶（Redis Lua）→ 超限 429 + Retry-After；
+    #    并发槽（Semaphore）占满同 429。廉价检查放转发前，不扣 SLO 也不泄漏转发成本。
+    allowed, retry_after = await limiter.check(
+        api_key.id, api_key.rpm_limit, api_key.tpm_limit, estimate_tokens(req.messages)
+    )
+    if not allowed:
+        raise RateLimitError(retry_after=retry_after or 1)
+    if not limiter.try_acquire():
+        raise RateLimitError(retry_after=1)
+
+    # 4) 渠道实例化：app.state 单例（lifespan 构造，连接池复用，关闭时 aclose）
     provider: DeepSeekProvider = request.app.state.deepseek_provider
 
-    # 4) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
+    # 5) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
     if req.stream:
         return StreamingResponse(
-            _stream_events(provider, req),
+            _stream_events(limiter, provider, req),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",  # 禁用反向代理缓冲，保证逐块即时下发
             },
         )
-    return await provider.chat(req)
+    try:
+        return await provider.chat(req)
+    finally:
+        limiter.release()  # 非流式同步完成，槽位即释

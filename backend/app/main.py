@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 
+import redis.asyncio as aioredis
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -10,15 +11,17 @@ from app.api.v1.gateway import router as gateway_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.providers.deepseek import DeepSeekProvider
+from app.services.rate_limit import RateLimiter
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时创建 async 引擎与渠道 provider 单例，关闭时释放。
+    """应用生命周期：启动时创建 async 引擎、渠道 provider 与限流单例，关闭时释放。
 
     create_async_engine 是惰性连接，应用可在 pg 未就绪时启动；
     实际查询时才建连（池预检 pool_pre_ping 应对连接回收）。
     provider 单例持有 httpx 连接池（进程级复用），关闭时 aclose() 释放。
+    Redis.from_url 同样惰性：限流（W2 任务 3）首次 EVAL 才建连；aclose() 关闭。
     """
     settings = get_settings()
     engine: AsyncEngine = create_async_engine(
@@ -31,9 +34,14 @@ async def lifespan(app: FastAPI):
         api_key=settings.deepseek_api_key,
         base_url=settings.deepseek_base_url,
     )
+    # W2 任务 3：令牌桶限流单例（Redis Lua EVAL + Semaphore 并发槽）
+    app.state.rate_limiter = RateLimiter(
+        aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
+    )
     try:
         yield
     finally:
+        await app.state.rate_limiter.aclose()
         await app.state.deepseek_provider.aclose()
         await engine.dispose()
 
