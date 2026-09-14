@@ -11,6 +11,7 @@ from app.api.v1.gateway import router as gateway_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.providers.deepseek import DeepSeekProvider
+from app.services.billing import BalanceService
 from app.services.idempotency import IdempotencyService
 from app.services.rate_limit import RateLimiter
 
@@ -43,11 +44,16 @@ async def lifespan(app: FastAPI):
     app.state.idempotency = IdempotencyService(
         aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
     )
+    # W3 任务 1：余额预检单例（Redis 余额缓存，未命中查库回填），独立连接
+    app.state.billing = BalanceService(
+        aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
+    )
     try:
         yield
     finally:
         await app.state.rate_limiter.aclose()
         await app.state.idempotency.aclose()
+        await app.state.billing.aclose()
         await app.state.deepseek_provider.aclose()
         await engine.dispose()
 

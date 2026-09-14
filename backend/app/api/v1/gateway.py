@@ -20,6 +20,7 @@ from app.models import ApiKey, Model
 from app.providers.deepseek import DeepSeekProvider
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
 from app.services.idempotency import IdempotencyOutcome, IdempotencyService
+from app.services.billing import BalanceService, estimate_cost
 from app.services.keys import check_model_whitelist
 from app.services.rate_limit import RateLimiter, estimate_tokens
 
@@ -34,6 +35,11 @@ def get_rate_limiter(request: Request) -> RateLimiter:
 def get_idempotency(request: Request) -> IdempotencyService:
     """幂等键单例依赖：lifespan 构造（与限流共 Redis 连接，W2 任务 4）。"""
     return request.app.state.idempotency
+
+
+def get_billing(request: Request) -> BalanceService:
+    """余额预检单例依赖：lifespan 构造（W3 任务 1，Redis 余额缓存）。"""
+    return request.app.state.billing
 
 
 async def _stream_events(
@@ -91,6 +97,7 @@ async def chat_completions(
     api_key: ApiKey = Depends(require_gateway_api_key),
     limiter: RateLimiter = Depends(get_rate_limiter),
     idempotency: IdempotencyService = Depends(get_idempotency),
+    billing: BalanceService = Depends(get_billing),
 ) -> ChatCompletionResponse | StreamingResponse:
     """对话端点：非流式返回完整 Chat Completion；流式返回 text/event-stream 逐块直通。"""
 
@@ -125,6 +132,14 @@ async def chat_completions(
         outcome, cached_body = await idempotency.get_or_acquire(api_key.id, idem_key)
         if outcome == IdempotencyOutcome.CACHED:
             return cached_body
+
+    # 3.5) 余额预检（W3 任务 1，幂等回放后、并发槽前）：缓存命中不查库，不足 402。
+    #     缓存回放的请求已计费，不必重复预检；放并发放行前做最廉检查，避免无偿占槽。
+    cost = estimate_cost(
+        model.input_price, model.output_price, estimate_tokens(req.messages)
+    )
+    async with AsyncSession(request.app.state.engine) as session:
+        await billing.precheck(session, api_key.tenant_id, cost)
 
     if not limiter.try_acquire():
         if idem_key:

@@ -1,6 +1,7 @@
-"""管理面请求/响应模型（W2 任务 1：auth + keys CRUD）。"""
+"""管理面请求/响应模型（W2 任务 1：auth + keys CRUD；W3 任务 1：models 定价 CRUD）。"""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -29,3 +30,23 @@ class CreateKeyRequest(BaseModel):
     rpm_limit: int = Field(default=60, ge=1)
     tpm_limit: int = Field(default=100000, ge=1)
     expires_at: Optional[datetime] = None
+
+
+class ModelCreate(BaseModel):
+    """创建模型定价记录（W3 任务 1）：全局模型清单 + 进/出价 + 启停。"""
+
+    model_name: str = Field(min_length=1, max_length=64)
+    channel_id: Optional[int] = None
+    input_price: Optional[Decimal] = None
+    output_price: Optional[Decimal] = None
+    enabled: bool = True
+
+
+class ModelUpdate(BaseModel):
+    """局部更新模型（PATCH）：仅覆盖提供的字段。"""
+
+    model_name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    channel_id: Optional[int] = None
+    input_price: Optional[Decimal] = None
+    output_price: Optional[Decimal] = None
+    enabled: Optional[bool] = None

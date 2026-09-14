@@ -89,6 +89,22 @@ class ConflictError(OpenAIError):
         )
 
 
+class InsufficientBalanceError(OpenAIError):
+    """租户余额不足（W3 任务 1 余额预检）→ 402（OpenAI 生态支付语义）。"""
+
+    def __init__(
+        self,
+        message: str = "insufficient balance",
+        code: str = "insufficient_balance",
+    ) -> None:
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            error_type="insufficient_quota",
+            code=code,
+        )
+
+
 class UpstreamError(OpenAIError):
     """上游不可用/超时 → 502/504，OpenAI api_error 结构、零内部堆栈。"""
 
