@@ -50,3 +50,25 @@ class ModelUpdate(BaseModel):
     input_price: Optional[Decimal] = None
     output_price: Optional[Decimal] = None
     enabled: Optional[bool] = None
+
+
+class ChannelCreate(BaseModel):
+    """创建渠道（W4 任务 2）：名称/提供方/base_url/权重/状态。密钥占位或透传。"""
+
+    name: str = Field(min_length=1, max_length=64)
+    provider: str = Field(default="deepseek", max_length=32)
+    base_url: str = Field(min_length=1, max_length=255)
+    api_key_encrypted: Optional[str] = None  # 不传则存占位（密钥加密留 W4 收尾统一加固）
+    weight: int = Field(default=10, ge=1)
+    status: str = Field(default="healthy", max_length=16)
+
+
+class ChannelUpdate(BaseModel):
+    """局部更新渠道（PATCH）：仅覆盖提供的字段。"""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    provider: Optional[str] = Field(default=None, max_length=32)
+    base_url: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    api_key_encrypted: Optional[str] = None
+    weight: Optional[int] = Field(default=None, ge=1)
+    status: Optional[str] = Field(default=None, max_length=16)

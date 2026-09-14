@@ -155,6 +155,28 @@ class CircuitBreaker:
         """上报成功：探测成功 → CLOSED 清计数；普通成功保持 CLOSED。"""
         await self._redis.eval(SUCCESS_LUA, 1, self._key(channel_id))
 
+    async def get_state(self, channel_id: int) -> dict:
+        """读取渠道熔断实时态（管理台展示用，只读不迁移）。
+
+        从 Redis HASH 返回 {state, failure_count, opened_at}；无记录时
+        state=closed / failure_count=0 / opened_at=0（CLOSED 初态）。
+        hgetall 返回字节或字符串取决于 decode_responses，统一收敛类型。
+        """
+        raw = await self._redis.hgetall(self._key(channel_id)) or {}
+        try:
+            fc = int(raw.get("failure_count", 0))
+        except (TypeError, ValueError):
+            fc = 0
+        try:
+            opened = float(raw.get("opened_at", 0))
+        except (TypeError, ValueError):
+            opened = 0.0
+        return {
+            "state": raw.get("state", "closed"),
+            "failure_count": fc,
+            "opened_at": opened,
+        }
+
     async def aclose(self) -> None:
         """释放底层 Redis 连接（lifespan 退出）。"""
         await self._redis.aclose()
