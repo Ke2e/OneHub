@@ -26,6 +26,13 @@ class FakeScalars:
         return self._rows
 
 
+class _FakeResult:
+    """模拟 CursorResult：仅暴露 rowcount（乐观锁 CAS 判定用）。"""
+
+    def __init__(self, rowcount: int):
+        self.rowcount = rowcount
+
+
 def _col_and_value(binary: BinaryExpression) -> tuple[str, Any]:
     """从 `列 == 值` / `列.is_(布尔)` 二元表达式提取 (列名, 值)。
 
@@ -112,6 +119,33 @@ class FakeSession:
             if getattr(cls, "__tablename__", None) == name:
                 return cls
         return None
+
+    def _store_key_for_table(self, table):
+        """按 Table.name 反查 store 的实体类型键（对齐 _store_key 的 tablename 反查）。"""
+        name = getattr(table, "name", None)
+        for cls in self._store:
+            if getattr(cls, "__tablename__", None) == name:
+                return cls
+        return None
+
+    def execute(self, stmt):
+        """模拟同步 execute：支持 UPDATE（乐观锁 CAS 用 rowcount 判定）。
+
+        离线语义：按 whereclause 过滤目标行 → 应用 values 字面量（无真实 SQL
+        副作用）→ rowcount = 匹配行数。SELECT 语句离线测试统一走 scalars/scalar。
+        """
+        if not hasattr(stmt, "table"):  # 非 UPDATE（无 .table）→ 空结果
+            return _FakeResult(0)
+        target = self._store.get(self._store_key_for_table(stmt.table), [])
+        matches = [
+            obj
+            for obj in target
+            if all(getattr(obj, name, None) == value for name, value in _filters(stmt))
+        ]
+        for obj in matches:
+            for col, value in getattr(stmt, "_values", {}).items():
+                setattr(obj, col.key, value)
+        return _FakeResult(len(matches))
 
     def _query(self, stmt):
         filters = _filters(stmt)
