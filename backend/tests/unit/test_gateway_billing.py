@@ -12,8 +12,10 @@ import app.api.v1.gateway as gateway_module
 from app.main import create_app
 from app.models import ApiKey, Model
 from app.services.keys import hash_sk_key
+from app.schemas.chat import ChatCompletionResponse, Choice, Message, Usage
 from tests._fake_billing import FakeBilling
 from tests._fake_db import FakeSession
+from tests._fake_usage import FakeUsageProducer
 
 VALID_KEY = "sk-test-gateway-key"
 MODEL = "deepseek-v4-flash-0731"
@@ -39,14 +41,13 @@ class FakeLimiter:
 
 class FakeProvider:
     async def chat(self, req):
-        return {
-            "id": "chatcmpl-billing",
-            "object": "chat.completion",
-            "created": 0,
-            "model": req.model,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        }
+        return ChatCompletionResponse(
+            id="chatcmpl-billing",
+            created=0,
+            model=req.model,
+            choices=[Choice(index=0, message=Message(role="assistant", content="ok"), finish_reason="stop")],
+            usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
 
     async def aclose(self):
         pass
@@ -59,6 +60,7 @@ def client(monkeypatch):
     factory.shared = FakeSession(
         [
             ApiKey(
+                id=1,  # 显式主键：鉴权走 scalar 不 commit，自增分配不会发生
                 tenant_id=7,
                 name="test-key",
                 key_prefix=VALID_KEY[:10],
@@ -80,10 +82,13 @@ def client(monkeypatch):
     with TestClient(create_app(), raise_server_exceptions=False) as c:
         limiter = FakeLimiter()
         billing = FakeBilling()
+        usage = FakeUsageProducer()
         c.app.dependency_overrides[gateway_module.get_rate_limiter] = lambda: limiter
         c.app.dependency_overrides[gateway_module.get_billing] = lambda: billing
+        c.app.dependency_overrides[gateway_module.get_usage_producer] = lambda: usage
         c.app.state.fake_limiter = limiter
         c.app.state.fake_billing = billing
+        c.app.state.fake_usage = usage
         c.app.state.deepseek_provider = FakeProvider()
         yield c
 
@@ -117,6 +122,7 @@ def test_sufficient_balance_forwards_then_releases(client):
     """余额充足 → 进并发槽转发，成功 release。预检在 check 后、acquire 前。"""
     billing: FakeBilling = client.app.state.fake_billing
     limiter: FakeLimiter = client.app.state.fake_limiter
+    usage: FakeUsageProducer = client.app.state.fake_usage
 
     resp = _chat(client)
 
@@ -126,3 +132,10 @@ def test_sufficient_balance_forwards_then_releases(client):
     assert [c[0] for c in limiter.calls] == ["check", "acquire", "release"]
     # 预检按 key 所属 tenant 定位
     assert billing.calls[0][0] == 7
+    # W3 任务 2：转发成功 → 发一次用量事件（载荷带幂等锚点 + usage + 落库字段）
+    assert len(usage.emitted) == 1
+    assert usage.emitted[0]["api_key_id"] == 1
+    assert usage.emitted[0]["model"] == MODEL
+    assert usage.emitted[0]["prompt_tokens"] == 1
+    assert usage.emitted[0]["completion_tokens"] == 1
+    assert usage.emitted[0]["total_tokens"] == 2

@@ -14,8 +14,10 @@ from app.main import create_app
 from app.models import ApiKey, Model
 from app.services.idempotency import IdempotencyOutcome
 from app.services.keys import hash_sk_key
+from app.schemas.chat import ChatCompletionResponse, Choice, Message, Usage
 from tests._fake_billing import FakeBilling
 from tests._fake_db import FakeSession
+from tests._fake_usage import FakeUsageProducer
 
 VALID_KEY = "sk-test-gateway-key"
 MODEL = "deepseek-v4-flash-0731"
@@ -73,14 +75,13 @@ CACHED_PAYLOAD = {
 
 class FakeProvider:
     async def chat(self, req):
-        return {
-            "id": "chatcmpl-fresh",
-            "object": "chat.completion",
-            "created": 0,
-            "model": req.model,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "fresh"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        }
+        return ChatCompletionResponse(
+            id="chatcmpl-fresh",
+            created=0,
+            model=req.model,
+            choices=[Choice(index=0, message=Message(role="assistant", content="fresh"), finish_reason="stop")],
+            usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
 
     async def aclose(self):
         pass
@@ -119,6 +120,7 @@ def client(monkeypatch):
         c.app.dependency_overrides[gateway_module.get_rate_limiter] = lambda: limiter
         c.app.dependency_overrides[gateway_module.get_idempotency] = lambda: idem
         c.app.dependency_overrides[gateway_module.get_billing] = lambda: FakeBilling()
+        c.app.dependency_overrides[gateway_module.get_usage_producer] = lambda: FakeUsageProducer()
         c.app.state.fake_limiter = limiter
         c.app.state.fake_idem = idem
         c.app.state.deepseek_provider = FakeProvider()  # 防 lifespan 真连网
