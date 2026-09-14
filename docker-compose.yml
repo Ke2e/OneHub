@@ -47,6 +47,21 @@ services:
       timeout: 3s
       retries: 10
 
+  worker:
+    # W3 任务 2：Celery worker——消费 usage:events 流异步落 usage_records。
+    # 复用 api 的镜像（后端代码自包含），command 启动 celery worker（同 hero 队列）。
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: onehub-worker
+    env_file: .env
+    command: ["sh", "-c", "export PYTHONPATH=/app && exec uv run celery -A app.workers.billing:celery_app worker --loglevel=info --concurrency=2"]
+    depends_on:
+      pg:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:

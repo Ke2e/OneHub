@@ -14,6 +14,7 @@ from app.providers.deepseek import DeepSeekProvider
 from app.services.billing import BalanceService
 from app.services.idempotency import IdempotencyService
 from app.services.rate_limit import RateLimiter
+from app.services.usage_events import UsageProducer
 
 
 @asynccontextmanager
@@ -48,12 +49,17 @@ async def lifespan(app: FastAPI):
     app.state.billing = BalanceService(
         aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
     )
+    # W3 任务 2：用量事件生产者单例（XADD usage:events，worker 异步落库），独立连接
+    app.state.usage_producer = UsageProducer(
+        aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
+    )
     try:
         yield
     finally:
         await app.state.rate_limiter.aclose()
         await app.state.idempotency.aclose()
         await app.state.billing.aclose()
+        await app.state.usage_producer.aclose()
         await app.state.deepseek_provider.aclose()
         await engine.dispose()
 

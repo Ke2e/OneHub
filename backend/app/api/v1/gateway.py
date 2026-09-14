@@ -7,6 +7,8 @@
 """
 
 import json
+import time
+import uuid
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, Request
@@ -23,6 +25,7 @@ from app.services.idempotency import IdempotencyOutcome, IdempotencyService
 from app.services.billing import BalanceService, estimate_cost
 from app.services.keys import check_model_whitelist
 from app.services.rate_limit import RateLimiter, estimate_tokens
+from app.services.usage_events import UsageProducer, build_usage_event
 
 router = APIRouter(prefix="/v1")
 
@@ -42,21 +45,49 @@ def get_billing(request: Request) -> BalanceService:
     return request.app.state.billing
 
 
+def get_usage_producer(request: Request) -> UsageProducer:
+    """用量生产者单例依赖：lifespan 构造（W3 任务 2，XADD usage:events）。"""
+    return request.app.state.usage_producer
+
+
 async def _stream_events(
     limiter: RateLimiter,
     provider: DeepSeekProvider,
     req: ChatCompletionRequest,
+    usage_producer: UsageProducer | None,
+    api_key: ApiKey,
+    channel_id: int | None,
+    request_id: str,
+    started_at: float,
 ) -> AsyncIterator[str]:
     """流式透传：上游事件 dict → SSE 行（data: {json}\n\n），[DONE] 正常收尾。
 
     坏 JSON 已在解析器层跳过；调用方断连时本生成器被取消，provider 的 async with
     退出并关闭上游连接（T016「断开检测终止上游」，无额外代码）。finally 释放限流
     并发槽——流式期间槽位由本生成器持有，响应发完或断连都不泄漏。
+    usage 在流尾 chunk 携带（with_usage 保证末尾必有）：透传完成后 XADD 用量事件，
+    交 worker 异步幂等落库（W3 任务 2）。emit 失败不影响透传（计费尽力而为）。
     """
     try:
+        usage: dict | None = None
         async for chunk in provider.chat_stream(req):
+            if isinstance(chunk, dict) and chunk.get("usage"):
+                usage = chunk["usage"]
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
+        if usage and usage_producer is not None:
+            await usage_producer.emit(
+                build_usage_event(
+                    request_id=request_id,
+                    api_key_id=api_key.id,
+                    channel_id=channel_id,
+                    model=req.model,
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    latency_ms=int((time.monotonic() - started_at) * 1000),
+                    status_code=200,
+                )
+            )
     finally:
         limiter.release()
 
@@ -98,8 +129,14 @@ async def chat_completions(
     limiter: RateLimiter = Depends(get_rate_limiter),
     idempotency: IdempotencyService = Depends(get_idempotency),
     billing: BalanceService = Depends(get_billing),
+    usage_producer: UsageProducer = Depends(get_usage_producer),
 ) -> ChatCompletionResponse | StreamingResponse:
     """对话端点：非流式返回完整 Chat Completion；流式返回 text/event-stream 逐块直通。"""
+
+    # W3 任务 2：每次真实转发分配用量事件幂等锚点（usage_records.request_id unique），
+    # 计时起点用于 latency 上报。转发生效后才 emit；缓存回放/失败不产生新事件。
+    request_id = str(uuid.uuid4())
+    started_at = time.monotonic()
 
     # 1) model 可用性校验（W1 数据源 = models 表 enabled 集合）
     async with AsyncSession(request.app.state.engine) as session:
@@ -152,7 +189,16 @@ async def chat_completions(
     # 6) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
     if req.stream:
         return StreamingResponse(
-            _stream_events(limiter, provider, req),
+            _stream_events(
+                limiter,
+                provider,
+                req,
+                usage_producer,
+                api_key,
+                model.channel_id,
+                request_id,
+                started_at,
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -169,4 +215,18 @@ async def chat_completions(
         limiter.release()  # 非流式同步完成，槽位即释
     if idem_key:
         await idempotency.complete(api_key.id, idem_key, response)  # 成功 → 写缓存
+    # 非流式：转发成功 → 发用量事件（usage 在响应对象；上游未返则不产生事件）
+    if response.usage:
+        await usage_producer.emit(
+            build_usage_event(
+                request_id=request_id,
+                api_key_id=api_key.id,
+                channel_id=model.channel_id,
+                model=req.model,
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                status_code=200,
+            )
+        )
     return response
