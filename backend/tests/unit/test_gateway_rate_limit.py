@@ -12,6 +12,7 @@ import app.api.v1.gateway as gateway_module
 from app.main import create_app
 from app.models import ApiKey, Model
 from app.services.keys import hash_sk_key
+from tests._fake_billing import FakeBilling
 from tests._fake_db import FakeSession
 
 VALID_KEY = "sk-test-gateway-key"
@@ -69,6 +70,7 @@ def client(monkeypatch):
     with TestClient(create_app(), raise_server_exceptions=False) as c:
         limiter = FakeLimiter()
         c.app.dependency_overrides[gateway_module.get_rate_limiter] = lambda: limiter
+        c.app.dependency_overrides[gateway_module.get_billing] = lambda: FakeBilling()
         c.app.state.fake_limiter = limiter
         yield c
 

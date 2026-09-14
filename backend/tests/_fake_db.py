@@ -89,6 +89,11 @@ class FakeSession:
     async def refresh(self, obj):
         pass  # id 已在 commit 分配
 
+    def delete(self, obj):
+        """硬删：从 store 移除（models 硬删用，usage_records.model 为 varchar 非 FK）。"""
+        if obj in self._store[type(obj)]:
+            self._store[type(obj)].remove(obj)
+
     # ── 读路径 ──
     def _store_key(self, stmt):
         """定位 stmt 的目标实体类型。

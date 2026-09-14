@@ -14,6 +14,7 @@ from app.main import create_app
 from app.models import ApiKey, Model
 from app.services.idempotency import IdempotencyOutcome
 from app.services.keys import hash_sk_key
+from tests._fake_billing import FakeBilling
 from tests._fake_db import FakeSession
 
 VALID_KEY = "sk-test-gateway-key"
@@ -117,6 +118,7 @@ def client(monkeypatch):
         idem = FakeIdempotency()
         c.app.dependency_overrides[gateway_module.get_rate_limiter] = lambda: limiter
         c.app.dependency_overrides[gateway_module.get_idempotency] = lambda: idem
+        c.app.dependency_overrides[gateway_module.get_billing] = lambda: FakeBilling()
         c.app.state.fake_limiter = limiter
         c.app.state.fake_idem = idem
         c.app.state.deepseek_provider = FakeProvider()  # 防 lifespan 真连网
