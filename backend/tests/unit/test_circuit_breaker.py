@@ -104,14 +104,20 @@ def test_after_success_half_open_closes():
 class FakeRedis:
     """收集 eval 调用 + 可编程返回值的桩（对齐 _fake_db / rate_limit 离线风格）。"""
 
-    def __init__(self, result=None):
+    def __init__(self, result=None, hgetall=None):
         self.result = result
+        self._hgetall = hgetall or {}
         self.calls = []
+        self.hgetall_calls = []
         self.closed = False
 
     async def eval(self, script, numkeys, *args):
         self.calls.append((script, numkeys, args))
         return self.result
+
+    async def hgetall(self, key):
+        self.hgetall_calls.append(key)
+        return self._hgetall
 
     async def aclose(self):
         self.closed = True
@@ -176,3 +182,33 @@ async def test_aclose_closes_redis():
     breaker = CircuitBreaker(redis)
     await breaker.aclose()
     assert redis.closed is True
+
+
+# ── 5) get_state：管理台熔断实时态（只读展示） ──
+
+@pytest.mark.asyncio
+async def test_get_state_returns_closed_default():
+    """无 HASH 记录 → CLOSED 初态（state=closed / fc=0 / opened_at=0）。"""
+    redis = FakeRedis(hgetall={})
+    breaker = CircuitBreaker(redis)
+    st = await breaker.get_state(channel_id=5)
+    assert redis.hgetall_calls == ["breaker:5"]
+    assert st == {"state": "closed", "failure_count": 0, "opened_at": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_get_state_parses_hash_fields():
+    """HASH 存在 → 解析三字段（decode_responses=True 下为 str）。"""
+    redis = FakeRedis(hgetall={"state": "open", "failure_count": "7", "opened_at": "1234.5"})
+    breaker = CircuitBreaker(redis)
+    st = await breaker.get_state(channel_id=9)
+    assert st == {"state": "open", "failure_count": 7, "opened_at": 1234.5}
+
+
+@pytest.mark.asyncio
+async def test_get_state_tolerates_bad_values():
+    """损坏字段值 → 回退默认（不抛异常，管理台展示健壮）。"""
+    redis = FakeRedis(hgetall={"state": "half_open", "failure_count": "abc", "opened_at": "x"})
+    breaker = CircuitBreaker(redis)
+    st = await breaker.get_state(channel_id=1)
+    assert st == {"state": "half_open", "failure_count": 0, "opened_at": 0.0}
