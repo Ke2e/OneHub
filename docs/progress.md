@@ -1,5 +1,31 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-14（W4 任务 1：智能路由 + 三态熔断达成，168 passed + 端到端冒烟验收）
+
+**背景**：W4 任务 1 = 加权轮询 + 指数退避重试（含抖动）+ 三态熔断器，验收"封主渠道自动切备、恢复切回"。三态熔断器属保护清单，手写 Redis Lua；加权轮询/指数退避非保护清单但手写保简历叙事。无 DDL/新外部依赖，不触发停机点 3。
+
+**做了什么**：
+
+1. `app/services/circuit_breaker.py`（保护清单，手写）：`HASH breaker:{channel_id}`（state/failure_count/opened_at）+ Lua 原子迁移（查询+迁移一步内完成），三态——CLOSED 计数放行 / OPEN 冷却期拒绝、过冷却转 HALF_OPEN 放行探测 / HALF_OPEN 放行探测后据成败切回/重开；`record_success`/`record_failure` 驱动状态机。
+2. `app/services/router.py`：`WeightedRobin`（游标对可用总权重取模，连续均匀）+ `exponential_backoff`（`min(cap, base*2^(attempt-1))*(1±jitter)`，rng 可注入）。
+3. `app/services/smart_router.py`：编排——熔断过滤（can_try）→ 加权挑选（robin）→ 失败 `record_failure` + 剔除该渠道 + 退避重试 → 成功 `record_success`；全部候选失败 503。流式走 `pick_channel` 单次选择（首事件后不可重试）；非流式走 `forward`。
+4. `app/api/v1/gateway.py`：候选 = 同 model_name 多行 enabled 挂到的 channel（权重/可用性取自 `channels.status==healthy`）；有候选走智能路由、无候选回退 `app.state.deepseek_provider` 单例（保持既有测试/单渠道语义零改动）；`_provider_for_channel` 按渠道惰性构造缓存 provider。
+5. `app/main.py`：lifespan 注入 `app.state.channel_providers`（关闭统一 aclose）。
+6. `scripts/seed.py`：加备份渠道 `deepseek-backup`（weight=5 占位 key）+ 同名模型变体（(model_name, channel_id) 双键幂等）。
+7. 测试：`test_circuit_breaker.py`（三态迁移/计数/探测恢复）、`test_router.py`（加权轮询比例/退避对拍）、`test_smart_router.py`（编排：熔断过滤/全败 503/加权分布/失败剔除重试）、`test_gateway_router.py`（端点集成 + 端到端冒烟）。
+
+**验证（dev-verify 证据）**：
+
+- `.\.venv\Scripts\python.exe -m pytest -q` → **168 passed**（126 基线 → 168，全绿；既有网关测试零改动通过）
+- 端到端冒烟（真实 SmartRouter + FakeBreaker，stub 上游）验收标准直证：
+  - 主渠道熔断 OPEN → 跳过主、自动切到备份渠道成功，用量事件绑定实际渠道（CH2）
+  - 冷却恢复（熔断关闭）→ 流量切回主渠道（CH1），provider 重新被选中
+  - 全部候选不可用 → 503 api_error
+
+**提交链**：test(circuit_breaker)/test(router) RED → feat(circuit_breaker)/feat(router) GREEN → feat(smart_router)+test(smart_router) → feat(gateway+main+seed)+test(gateway_router 含冒烟)（待 Asize 确认后提交）
+
+**下一步**：W4 任务 2 React 管理台 + ECharts 仪表盘 + Playground。
+
 ## 会话 2026-09-14（W3 任务 3：并发扣减——乐观锁 + 失败重试达成，126 passed + 对账脚本四段 ALL PASS）
 
 **背景**：W3 任务 3 = 并发扣减（乐观锁 + 失败重试），验收标准"对账脚本通过（PROJECT_CONTEXT 6.3 标准）"。保护清单项，dev-tdd 先写测试。`balances.version` 列 T006 建表时已含，无 DDL 变更，不触发停机点 3。

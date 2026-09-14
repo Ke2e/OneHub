@@ -40,3 +40,14 @@
 - **`version` 列在建表迁移 T006 已含**（`balances.version BigInteger server_default='0'`），乐观锁无需新迁移，不触发 DDL 停机点。
 - **幂等落库与扣减的顺序性**：`UsageConsumer.consume` 先查已落库 request_id 集合跳重，再逐事件「插入 UsageRecord + charge_balance 扣减 + 失效 Redis 余额缓存」，全部同事务 commit——重复事件（同 request_id）零新增行也零重复扣减（DB unique 兜底）。
 - **对账脚本三段语义（PROJECT_CONTEXT 6.3）**：① Stream 事件数 == usage_records 行数（幂等零重复）；② 余额 == 初始 − Σcost（Decimal 精确求和对账）；③ N 路并发 `charge_balance` 收敛（乐观锁 + 失败重试鲁棒性）。幂等重放（同 request_id 重复事件）零新增、余额不变为额外验证。
+
+## 技术事实（W4 任务 1：智能路由 + 三态熔断）
+
+- **三态熔断状态放 Redis（多 worker 共享）手写 Lua 原子迁移**：`HASH breaker:{channel_id}` 存 `state/failure_count/opened_at`，唯一共享点是状态（EVAL 内查询+迁移原子）；CLOSED 计数放行（失败才计数）/ OPEN 冷却期内拒绝、过冷却转 HALF_OPEN 放行探测 / HALF_OPEN 放行探测后据成败切回或重开。进程内 explain（闭包/纯函数）+ Redis 状态组合，不打散"手写保护清单"叙事。
+- **候选=数据库可见渠道而非 provider 平面**：同一 `model_name` 的 model_enabled 多行各挂一个 channel → 每行一条 `Candidate(channel_id, weight=channel.weight, available=channel.status=="healthy")`。通道来源是 DB（权重/封禁/渠道归属都在这张表），不引入独立"渠道注册表"。
+- **加权轮询 = 游标对"可用总权重"取模**：进程内 `WeightedRobin._cursor` 持续递增，落在哪个候选的累计权重区间即选中；weight 大的区间更宽 → 被选概率更高，确定且均匀（非纯随机，无长尾扎堆）。多 worker 下轮询游标各进程独立，仅熔断状态跨 worker 共享——负载均衡允许多 worker 分布（确定性让位给可用性）。
+- **指数退避重试要配抖动（jitter）避免 thundering herd**：`delay = min(cap, base*2^(attempt-1)) * (1 ± jitter)`。纯退避在同波同时失败时会把重试再次撞在同一时刻；±15% 抖动散开。attempt 从 1 起。`rng` 可注入以便测试对拍确定性。
+- **流式只在"首个事件产出前"可重试**：流式走 `pick_channel` 单次选择（选到即透传，已下发的 SSE 无法回滚重试）；非流式走 `forward`（加权挑选→失败退避→换候选，全部失败 503）。
+- **熔断记成功/失败去驱动状态机**：`record_success`（HALF_OPEN 探测成功 → 重开 CLOSED、清零计数）/ `record_failure`（计数+超阈值 → OPEN 记 opened_at）。CLOSED 时计数放行但失败累计，避免"每次失败都直接开断"。
+- **provider 按渠道惰性构造缓存**：`_provider_for_channel(channel)` 首建 `DeepSeekProvider(base_url=channel.base_url, api_key=channel.api_key_encrypted)` 入 `app.state.channel_providers`（连接池复用），lifespan 关闭统一 aclose。密钥沿用渠道表明文占位（W4 加密走 ADR，不本任务做）。
+- **单渠道回退保兼容**：候选为空（model.channel_id=None/测试桩）时回退 `app.state.deepseek_provider` 单例，既有单渠道语义与 126 基线上所有网关测试零改动通过。
