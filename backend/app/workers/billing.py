@@ -1,9 +1,9 @@
-"""Celery worker：异步消费用量 Stream → 幂等落 usage_records（W3 任务 2）。
+"""Celery worker：异步消费用量 Stream → 幂等落 usage_records + 乐观锁扣减（W3 任务 2/3）。
 
 链路：网关 XADD `usage:events` → Celery worker（redis broker）周期性触发
 `process_usage_events` task → 读取 Stream 事件 → `UsageConsumer` 幂等落库
-（request_id unique 兜底）→ 对账零重复。乐观锁扣减 balances 归任务 3，
-本 task 只做落库。
+（request_id unique 兜底）+ 倍率计价 + 乐观锁扣减 balances + 失效余额缓存
+→ 对账零重复、余额 == 初始 − Σcost 精确一致。
 
 依赖注入：Celery task 同步签名内用 `asyncio` 桥接 async 引擎/session，
 复用 app.core.config 的 DATABASE_URL（与 api 容器一致），不引 FastAPI。
@@ -33,20 +33,30 @@ _CONSUMER = "billing-worker"
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=3)
 def process_usage_events(self, batch: list[dict]) -> int:
-    """消费一批用量事件并幂等落库，返回成功落库行数。
+    """消费一批用量事件并幂等落库 + 乐观锁扣减，返回成功落库行数。
 
     幂等由 usage_records.request_id unique 兜底：重复事件（XACK 重放/同 request_id
-    重发）被 DB unique 拒绝，此处先查后插再 commit，零重复行。失败重试（max_retries=2）。
+    重发）被 DB unique 拒绝，此处先查后插再 commit，零重复行。乐观锁扣减冲突
+    抛 ChargeConflictError → 事务回滚 → 本 task 重试（max_retries=2）。Redis
+    连接供扣减后失效余额缓存，任务内用完即关。
     """
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    import redis.asyncio as aioredis
+
     engine = create_async_engine(settings.database_url, pool_pre_ping=True)
     Session = async_sessionmaker(engine, expire_on_commit=False)
+    redis = aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
 
     async def _run() -> int:
-        async with Session() as session:
-            consumer = UsageConsumer(session=session, redis=None, stream=USAGE_STREAM)
-            return await consumer.consume(batch)
+        try:
+            async with Session() as session:
+                consumer = UsageConsumer(
+                    session=session, redis=redis, stream=USAGE_STREAM
+                )
+                return await consumer.consume(batch)
+        finally:
+            await redis.aclose()
 
     try:
         inserted = asyncio.run(_run())
@@ -57,10 +67,11 @@ def process_usage_events(self, batch: list[dict]) -> int:
 
 
 async def read_and_process(batch_size: int = _MAX_BATCH) -> int:
-    """从 usage:events 流消费组拉取一批事件 → 幂等落库 → XACK，返回落库行数。
+    """从 usage:events 流消费组拉取一批事件 → 幂等落库 + 扣减 → XACK，返回落库行数。
 
     生产链路（全程异步）：XREADGROUP 读未处理事件 → UsageConsumer.consume 落库
-    → XACK 移交已处理。幂等落库保证重复消费（崩溃后重读）零重复行。
+    + 乐观锁扣减 + 失效余额缓存 → XACK 移交已处理。幂等落库保证重复消费（崩溃
+    后重读）零重复行；扣减冲突抛错则不 XACK，事件留流重试。
     """
     import redis.asyncio as aioredis
 
@@ -85,7 +96,9 @@ async def read_and_process(batch_size: int = _MAX_BATCH) -> int:
         entries = raw[0][1]  # [(msg_id, {field: value}), ...]
         events = [dict(fields) for _, fields in entries]
         async with Session() as session:
-            consumer = UsageConsumer(session=session, redis=None, stream=USAGE_STREAM)
+            consumer = UsageConsumer(
+                session=session, redis=redis, stream=USAGE_STREAM
+            )
             inserted = await consumer.consume(events)
         # 落库成功 → XACK（groupId, consumer, stream, *ids）
         await redis.xack(USAGE_STREAM, USAGE_GROUP, *[mid for mid, _ in entries])

@@ -125,12 +125,12 @@ async def test_charge_balance_retries_on_version_conflict(monkeypatch):
     original = session.execute
     first = {"n": 0}
 
-    def flaky_execute(stmt):
+    async def flaky_execute(stmt):
         if first["n"] == 0:
             # 首次 CAS 前模拟并发请求已提交（version+1）→ 本次 UPDATE 失配 0 行
             session.stored(Balance)[0].version += 1
         first["n"] += 1
-        return original(stmt)
+        return await original(stmt)
 
     monkeypatch.setattr(session, "execute", flaky_execute)
 
@@ -148,10 +148,10 @@ async def test_charge_balance_exhausts_retries_raises(monkeypatch):
     original = session.execute
     n = {"count": 0}
 
-    def always_conflict(stmt):
+    async def always_conflict(stmt):
         session.stored(Balance)[0].version += 1  # 永远失配
         n["count"] += 1
-        return original(stmt)
+        return await original(stmt)
 
     monkeypatch.setattr(session, "execute", always_conflict)
 

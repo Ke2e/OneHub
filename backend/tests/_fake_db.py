@@ -128,8 +128,8 @@ class FakeSession:
                 return cls
         return None
 
-    def execute(self, stmt):
-        """模拟同步 execute：支持 UPDATE（乐观锁 CAS 用 rowcount 判定）。
+    async def execute(self, stmt):
+        """模拟异步 execute：支持 UPDATE（乐观锁 CAS 用 rowcount 判定）。
 
         离线语义：按 whereclause 过滤目标行 → 应用 values 字面量（无真实 SQL
         副作用）→ rowcount = 匹配行数。SELECT 语句离线测试统一走 scalars/scalar。
@@ -144,7 +144,9 @@ class FakeSession:
         ]
         for obj in matches:
             for col, value in getattr(stmt, "_values", {}).items():
-                setattr(obj, col.key, value)
+                # values 的 Python 字面量被 SQLAlchemy 包成 BindParameter（绑定值）
+                # → 取 .value 还原真实字面量（对齐 _col_and_value 的右值处理）
+                setattr(obj, col.key, getattr(value, "value", value))
         return _FakeResult(len(matches))
 
     def _query(self, stmt):
