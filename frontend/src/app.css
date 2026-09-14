@@ -1,0 +1,30 @@
+.layout { display: flex; height: 100vh; }
+
+.sidebar {
+  width: 208px;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 12px;
+  gap: 4px;
+}
+.sidebar .brand { padding: 6px 12px 16px; display: flex; flex-direction: column; }
+.sidebar .brand strong { font-size: 18px; }
+.sidebar .brand span { color: var(--text-2); font-size: 12px; margin-top: 2px; }
+.sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.sidebar nav a {
+  color: var(--text-2);
+  padding: 9px 12px;
+  border-radius: 7px;
+  font-size: 14px;
+}
+.sidebar nav a:hover { background: #f0f2f8; color: var(--text); }
+.sidebar nav a.active { background: var(--brand-soft); color: var(--brand); font-weight: 500; }
+.sidebar .logout { margin-top: 12px; }
+
+.content { flex: 1; overflow: auto; padding: 20px 24px; }
+
+.page-title { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+.page-sub { color: var(--text-2); font-size: 13px; margin: 0 0 18px; }
+.page-head { display: flex; justify-content: space-between; align-items: flex-start; }
