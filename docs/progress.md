@@ -1,5 +1,31 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-14（W3 任务 3：并发扣减——乐观锁 + 失败重试达成，126 passed + 对账脚本四段 ALL PASS）
+
+**背景**：W3 任务 3 = 并发扣减（乐观锁 + 失败重试），验收标准"对账脚本通过（PROJECT_CONTEXT 6.3 标准）"。保护清单项，dev-tdd 先写测试。`balances.version` 列 T006 建表时已含，无 DDL 变更，不触发停机点 3。
+
+**做了什么**：
+
+1. `app/services/billing.py`：`charge_balance`（乐观锁 CAS——先读最新 version → `UPDATE ... WHERE tenant_id=? AND version=?`，单行事务级互斥，rowcount=0 重读重试；无余额行/重试耗尽抛 `ChargeConflictError` 交 worker 回滚重试，不静默丢钱）+ `compute_cost` 倍率计价（实际 token×单价，Decimal 精确）+ `MAX_CHARGE_RETRIES`。
+2. `app/services/usage_events.py`：`UsageConsumer.consume` 幂等落库后逐事件扣减租户余额（`charge_balance`）并失效 Redis 余额缓存；`_price_for`/`_tenant_for` 查价与租户归属。
+3. `app/workers/billing.py`：`read_and_process`/`process_usage_events` 传 redis 连接给 `UsageConsumer`（扣减后失效缓存）。
+4. 测试：`tests/unit/test_charge_billing.py`（CAS 重试/连续冲突耗尽/无行抛错/倍率计价）+ `tests/_fake_db.py` execute 改 async + BindParameter 取 .value。
+5. 对账脚本 `scripts/reconcile_charge.py`：三段 + 幂等重放（db15 Redis 隔离，固定命名幂等可重跑）。
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **126 passed**（116 基线 + 10 新增，全绿）
+- **对账脚本（真 Redis+PG，PROJECT_CONTEXT 6.3 标准）四段 ALL PASS**：
+  - ① 幂等落库零重复：XADD 50 唯一事件 → 消费落库 → Stream 事件数=50 == 行数=50（去重=50）
+  - ② 倍率计价 + 乐观锁扣减：余额=974.8100 == 初始 1000.0000 − Σcost=25.190000（精确一致）
+  - 幂等重放：同 request_id 重复事件落库 0 新行、余额不变（DB unique 兜底零重复扣减）
+  - ③ 并发扣减收敛：50 路 asyncio.gather 并发 charge_balance → 余额=924.8100 == 974.8100 − 50.00（零丢失零重复扣减）
+- **对账暴露并修复真实缺陷**：重试上限 5 在 50 路并发下抛 `ChargeConflictError after 5 retries`——同波并发者每波仅 1 人读到未被消费的 version（thundering herd），第 k 个并发者需约 k 次重试；上限提至 100（覆盖 50 并发 + 余量，冲突瞬态重读即收敛），重跑 ALL PASS。
+
+**提交链**：`1a9dbe3`（test RED）→ `d1233b9`（feat GREEN）→ `058c89f`（fix 重试上限）→ `7543e2d`（test reconcile）
+
+**下一步**：W3 任务 4 teach 检查点（幂等、事务隔离、并发扣减三方案、削峰，材料随任务产出待集中自验）。
+
 ## 会话 2026-09-14（W3 任务 2：用量事件 → Redis Stream → Celery 异步落库达成，116 passed + 真冒烟零重复）
 
 **背景**：W3 任务 2 = 用量事件 → Redis Stream → Celery 异步落库，验收标准"链路通畅"。ADR-0002 已获 Asize 批准（方案 A：Celery，停机点 3 解除），本轮引入 `celery[redis]`。

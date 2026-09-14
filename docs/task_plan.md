@@ -40,7 +40,7 @@
 |---|------|------|---------|
 | 1 | models 定价表 CRUD；余额预检（Redis） | done | 预检不查库、不足返 402 |
 | 2 | 用量事件 → Redis Stream → Celery 异步落库 | done | 链路通畅 ✅（网关 XADD → worker 消费 → 幂等落库零重复；116 passed + 真 Redis+PG 冒烟 11 事件→10 行零重复） |
-| 3 | 并发扣减：乐观锁 + 失败重试 | pending | 对账脚本通过（PROJECT_CONTEXT 6.3 标准） |
+| 3 | 并发扣减：乐观锁 + 失败重试 | done | 对账脚本通过（PROJECT_CONTEXT 6.3 标准）✅：50 事件幂等落库零重复 + 余额==初始−Σcost 精确一致 + 50 路并发扣减收敛（126 passed） |
 | 4 | teach 检查点：幂等、事务隔离、并发扣减三方案、削峰 | pending | 讲解通过 |
 
 ### W4 智能路由 + 管理台 + 压测
@@ -80,6 +80,7 @@
 | 2026-09-13 | **W2 任务 6 产出**：security-best-practices 审查（docs/security_review_w2.md）——FastAPI 安全规范主动审计，未发现 Critical/High 可利用漏洞；2 项 Medium（/docs 公开暴露、Redis 无认证暴露）+ 6 项 Low/观察（secret_key 默认值守卫、body 无大小上限、无安全响应头、PBKDF2 100k 迭代、JWT TTL 12h、LoginRequest 无下限）；保护清单核查四组件均无注入面。简历初版（docs/resume_draft.md）：W1–W2 成果四块（协议兼容链路 / SK-Key 鉴权 / Redis 限流 / 幂等键）+ 量化证据表，全部数字有命令级证据 | W2 阶段 1-4/6 达成交付；teach 材料已产出待集中自验；下一步进 W3 计费引擎（任务 1 models 定价 + 余额预检） |
 | 2026-09-14 | **W3 任务 1 执行期设计（dev-tdd，Asize 跳过澄清按推荐默认）**：402 走新增 `InsufficientBalanceError`（继承 OpenAIError，status=402 / type=insufficient_quota / code=insufficient_balance，OpenAI 生态支付语义）；余额预检不做超额扣减只做**成本估算**——`estimate_cost(input_price×in_tokens + output_price×out_tokens)`，`balance < 预估成本` 才 402；Redis 缓存余额 `balance:{tenant_id}`（TTL 短缓存），未命中查库回填，命中不查库（满足"预检不查库"验收）；models 定价 CRUD——models 全局表无 tenant，经 require_admin JWT 即管理身份；POST 查重式幂等（表无唯一约束）→409；DELETE 硬删（usage_records.model 为 VARCHAR 非 FK，删安全）；Numeric-Decimal → float 以 JSON 序列化；P1（超额拦截/计费回执）本轮跳过并入收尾前统一加固 | 提交链 feat(test)+docs；111 passed（92→111）；排障：admin_models 首次全量报 Decimal 序列化异常——测试请求体传 Decimal 对象、httpx 序列化 JSON 失败（JSON 本无 Decimal 语义），改传 float 由 Pydantic 落 Decimal；下一步任务 2 用量事件 → Redis Stream → Celery 异步落库 |
 | 2026-09-14 | **W3 任务 2 执行期设计（dev-tdd，Asize 已批准 ADR-0002）**：用量事件链路落 `app/services/usage_events.py`（Producer XADD + Consumer 幂等落库）+ `app/workers/billing.py`（Celery app + `read_and_process` 消费——ADR 方案 A 经停机点 3 批准引入 `celery[redis]`）；幂等锚点 = `usage_records.request_id` unique（重发/消费重放零重复行）；网关非流式/流式两路径在转发生效后 XADD（缓存回放/失败不产生事件）；worker 入 compose（复用 api 镜像，depends_on pg+redis）。冒烟暴露并修复两个真实生产缺陷：① Redis XADD 拒绝 None 字段 → `UsageProducer.emit` 落流前过滤可空可选字段（channel_id/latency_ms）；② worker 用 `decode_responses=True` 读出全字段为 str → `UsageConsumer.consume` 用 `_as_int` 收敛 int/None 再落库 | 提交链 test(usage_events)+feat(usage_events,workers,compose)+docs；116 passed（111→116）；真 Redis+PG 冒烟：XADD 11 事件（10 唯一 +1 重复）→ read_and_process 消费落库 10 行、范围行=去重行=10（零重复，链路通畅） |
+| 2026-09-14 | **W3 任务 3 执行期设计（dev-tdd，对账驱动）**：乐观锁扣减落 `app/services/billing.py`——`charge_balance`（先读最新 version → `UPDATE ... WHERE tenant_id=? AND version=?` 单行事务级互斥 CAS，rowcount=0 说明并发已提交 → 重读重试；无余额行/重试耗尽抛 `ChargeConflictError` 交 worker 回滚重试，不静默丢钱）+ `compute_cost` 倍率计价（实际 token×单价，与预检 estimate_cost 上限估算区分）+ `UsageConsumer.consume` 在幂等落库后逐事件扣减租户余额并失效 Redis 缓存 + worker 传 redis 连接。**对账暴露真实缺陷**：重试上限 5 在 50 路并发下不收敛（同波并发者每波仅 1 人读到未被消费的 version，第 k 个需约 k 次重试）→ 上限提至 100（覆盖 50 并发 + 余量，冲突瞬态重读即收敛） | 提交链 test(charge) RED→feat(charge) GREEN→fix(charge) 上限→test(reconcile)；126 passed（116→126）；对账脚本 reconcile_charge.py 四段 ALL PASS（幂等零重复/余额精确一致/幂等重放零新增/50 路并发收敛） |
 
 ## 遇到的错误
 
@@ -95,3 +96,4 @@
 | W3 任务 2 冒烟：XADD 报 `Invalid input of type: 'NoneType'` | 1 | Redis XADD 拒绝 None 字段值，而网关流式路径 `channel_id` 可为 None → producer.emit 落流前过滤可空可选字段（channel_id/latency_ms） |
 | W3 任务 2 冒烟：落库报 asyncpg DataError `'str' object cannot be interpreted as an integer` | 1 | worker 用 `decode_responses=True` 读 Stream，字段值全为 str（'10'/'1'）→ 消费端 `UsageConsumer._as_int` 落库前收敛 int/None |
 | W3 任务 2 冒烟：`session.scalar` 同步调用未 await（coroutine never awaited） | 1 | 冒烟脚本查库改用 `await session.scalar(...)`（async_session 的 scalar 是协程） |
+| W3 任务 3 对账 ③：50 路并发 charge_balance 抛 `ChargeConflictError after 5 retries` | 2 | 根因：重试上限 5 不足——同波并发者每波仅 1 人读到未被消费的 version（thundering herd），第 k 个并发者需约 k 次重试；上限提至 100（覆盖 50 并发 + 余量），重跑 ALL PASS |

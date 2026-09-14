@@ -32,3 +32,11 @@
 - **`decode_responses=True` 读 Stream 让所有字段值变 str**：worker 建 `aioredis.Redis(..., decode_responses=True)` 后 XREADGROUP 返回的字段值全是 str（`'10'`、`'1'`），直接绑定 int 列报 asyncpg `DataError: 'str' object cannot be interpreted as an integer`——消费端需 `int()` 收敛（None/空串 → None）。Stream 本身天然是"全字节"模型，跨边界一律按 str 处理。
 - **幂等落库的锚点 = `usage_records.request_id`（全局 unique）**：重复事件（同 request_id 线程重发 / 崩溃后 XACK 重放）被 DB unique 约束拒绝，配合消费端"先查已落库集合→跳重"双保险，任意重放零重复行。request_id 在网关每次真实转发分配，缓存回放/失败路径不产生事件（无用 log 污染）。
 - **Celery task 内桥接 async 数据库**：`process_usage_events` 是同步 task 签名，内部 `asyncio.run()` 跑 async 引擎/session（SQLAlchemy async），临时引擎用完 `engine.dispose()`——worker 长驻进程不跨任务持有连接。
+
+## 技术事实（W3 任务 3：乐观锁并发扣减）
+
+- **乐观锁 CAS 单行互斥**：`UPDATE balances SET balance = balance - cost, version = version + 1 WHERE tenant_id = ? AND version = ?`——PostgreSQL 行级锁使每个 version 恰被一个并发请求消费，rowcount=0 即 version 已变（有并发者提交），重读最新 version 重试。balance 存绝对值（非 delta），重读时读到的是包含他人扣减的最新值，扣减正确，**零丢失**。
+- **thundering herd（同波竞争）**：并发者同时读到同一 version 再同时 UPDATE，每波仅 1 人成功（其余 rowcount=0 进入重试），下一波再次同读同写——第 k 个并发者需约 k 次重试才能收敛。因此**重试上限必须 ≥ 预期并发峰值**（对账 50 并发验证 → 上限取 100 覆盖 + 余量），而非拍脑袋的小常数；冲突是瞬态（有并发者提交即收敛），重读即收敛，重试耗尽才抛错。
+- **`version` 列在建表迁移 T006 已含**（`balances.version BigInteger server_default='0'`），乐观锁无需新迁移，不触发 DDL 停机点。
+- **幂等落库与扣减的顺序性**：`UsageConsumer.consume` 先查已落库 request_id 集合跳重，再逐事件「插入 UsageRecord + charge_balance 扣减 + 失效 Redis 余额缓存」，全部同事务 commit——重复事件（同 request_id）零新增行也零重复扣减（DB unique 兜底）。
+- **对账脚本三段语义（PROJECT_CONTEXT 6.3）**：① Stream 事件数 == usage_records 行数（幂等零重复）；② 余额 == 初始 − Σcost（Decimal 精确求和对账）；③ N 路并发 `charge_balance` 收敛（乐观锁 + 失败重试鲁棒性）。幂等重放（同 request_id 重复事件）零新增、余额不变为额外验证。
