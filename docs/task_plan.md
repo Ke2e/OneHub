@@ -39,7 +39,7 @@
 | # | 任务 | 状态 | 验收标准 |
 |---|------|------|---------|
 | 1 | models 定价表 CRUD；余额预检（Redis） | done | 预检不查库、不足返 402 |
-| 2 | 用量事件 → Redis Stream → Celery 异步落库 | pending | 链路通畅 |
+| 2 | 用量事件 → Redis Stream → Celery 异步落库 | done | 链路通畅 ✅（网关 XADD → worker 消费 → 幂等落库零重复；116 passed + 真 Redis+PG 冒烟 11 事件→10 行零重复） |
 | 3 | 并发扣减：乐观锁 + 失败重试 | pending | 对账脚本通过（PROJECT_CONTEXT 6.3 标准） |
 | 4 | teach 检查点：幂等、事务隔离、并发扣减三方案、削峰 | pending | 讲解通过 |
 
@@ -79,6 +79,7 @@
 | 2026-09-13 | **W2 任务 4 执行期设计（dev-tdd）**：幂等落 `app/services/idempotency.py`——双键设计 `idem:{key_id}:{ik}`（响应缓存，EX=24h 幂等窗口）+ `:claim`（在途占位，EX=30s 兜底崩溃残留）；手写 `IDEMPOTENCY_LUA`（GET 缓存 → GET 占位 → SET 占位 return {status,value}，EVAL 内 read-modify-write 原子防并发双转发）；三态 `cached 回放 / claimed 轮询 / acquired 得主`，CLAIMED 在 `_wait_result` 内消化（得主写缓存→回放 / 占位消失→接管转发 / 超时 5s→409）；端点接入在限流后、转发前，仅非流式生效（流式 SSE 缓存=重放整段事件流成本高收益低，忽略该头）；失败路径（上游抛错 + 槽满 429）一律 `cancel` 释放占位否则后来者永久 409；不校验同 key 不同 body（Stripe 同款假设，信任调用方唯一 key 唯一请求） | 提交链 46105bc(test RED)→3bcbf2e(feat GREEN)→951459e(fix test)；92 passed（79→92）；真 Redis 冒烟 IO 全过（缓存回放/10 并发恰 1 得主/撤销可重试/Lua 语义对拍） |
 | 2026-09-13 | **W2 任务 6 产出**：security-best-practices 审查（docs/security_review_w2.md）——FastAPI 安全规范主动审计，未发现 Critical/High 可利用漏洞；2 项 Medium（/docs 公开暴露、Redis 无认证暴露）+ 6 项 Low/观察（secret_key 默认值守卫、body 无大小上限、无安全响应头、PBKDF2 100k 迭代、JWT TTL 12h、LoginRequest 无下限）；保护清单核查四组件均无注入面。简历初版（docs/resume_draft.md）：W1–W2 成果四块（协议兼容链路 / SK-Key 鉴权 / Redis 限流 / 幂等键）+ 量化证据表，全部数字有命令级证据 | W2 阶段 1-4/6 达成交付；teach 材料已产出待集中自验；下一步进 W3 计费引擎（任务 1 models 定价 + 余额预检） |
 | 2026-09-14 | **W3 任务 1 执行期设计（dev-tdd，Asize 跳过澄清按推荐默认）**：402 走新增 `InsufficientBalanceError`（继承 OpenAIError，status=402 / type=insufficient_quota / code=insufficient_balance，OpenAI 生态支付语义）；余额预检不做超额扣减只做**成本估算**——`estimate_cost(input_price×in_tokens + output_price×out_tokens)`，`balance < 预估成本` 才 402；Redis 缓存余额 `balance:{tenant_id}`（TTL 短缓存），未命中查库回填，命中不查库（满足"预检不查库"验收）；models 定价 CRUD——models 全局表无 tenant，经 require_admin JWT 即管理身份；POST 查重式幂等（表无唯一约束）→409；DELETE 硬删（usage_records.model 为 VARCHAR 非 FK，删安全）；Numeric-Decimal → float 以 JSON 序列化；P1（超额拦截/计费回执）本轮跳过并入收尾前统一加固 | 提交链 feat(test)+docs；111 passed（92→111）；排障：admin_models 首次全量报 Decimal 序列化异常——测试请求体传 Decimal 对象、httpx 序列化 JSON 失败（JSON 本无 Decimal 语义），改传 float 由 Pydantic 落 Decimal；下一步任务 2 用量事件 → Redis Stream → Celery 异步落库 |
+| 2026-09-14 | **W3 任务 2 执行期设计（dev-tdd，Asize 已批准 ADR-0002）**：用量事件链路落 `app/services/usage_events.py`（Producer XADD + Consumer 幂等落库）+ `app/workers/billing.py`（Celery app + `read_and_process` 消费——ADR 方案 A 经停机点 3 批准引入 `celery[redis]`）；幂等锚点 = `usage_records.request_id` unique（重发/消费重放零重复行）；网关非流式/流式两路径在转发生效后 XADD（缓存回放/失败不产生事件）；worker 入 compose（复用 api 镜像，depends_on pg+redis）。冒烟暴露并修复两个真实生产缺陷：① Redis XADD 拒绝 None 字段 → `UsageProducer.emit` 落流前过滤可空可选字段（channel_id/latency_ms）；② worker 用 `decode_responses=True` 读出全字段为 str → `UsageConsumer.consume` 用 `_as_int` 收敛 int/None 再落库 | 提交链 test(usage_events)+feat(usage_events,workers,compose)+docs；116 passed（111→116）；真 Redis+PG 冒烟：XADD 11 事件（10 唯一 +1 重复）→ read_and_process 消费落库 10 行、范围行=去重行=10（零重复，链路通畅） |
 
 ## 遇到的错误
 
@@ -91,3 +92,6 @@
 | 本机 uvicorn 启动后 model 校验请求全部 500 | 2 | 根因：.env 的 DATABASE_URL 用容器主机名 `pg`，本机进程解析失败（`socket.gaierror`）。本机运行用环境变量覆盖 `DATABASE_URL=postgresql+asyncpg://onehub:onehub@localhost:5432/onehub`（.env 供 compose 内部使用，不一致属设计选择而非 bug） |
 | 真转发返回 502/404（message: upstream server error） | 3 | 根因：真实渠道为 SenseAudio 中转，只认 `/v1` 前缀路径且模型 ID 非 deepseek-chat。解决：`_normalize_base_url()` 自动补 `/v1` + 种子/DB 模型 ID 更新，CP3.1 后 200 |
 | 幂等单测 3 用例 FAIL（`result[0]` 期望 `'claim'` 实得 `'claimed'`） | 2 | Lua 真实返回语义为 `'claimed'`（占位已存在），测试首写 `'claim'` 与实现不一致——对齐测试预期而非改实现（fix 提交）；连带 FakeRedis 补占位键写入语义、ApiKey fixture 补显式 `id=1` |
+| W3 任务 2 冒烟：XADD 报 `Invalid input of type: 'NoneType'` | 1 | Redis XADD 拒绝 None 字段值，而网关流式路径 `channel_id` 可为 None → producer.emit 落流前过滤可空可选字段（channel_id/latency_ms） |
+| W3 任务 2 冒烟：落库报 asyncpg DataError `'str' object cannot be interpreted as an integer` | 1 | worker 用 `decode_responses=True` 读 Stream，字段值全为 str（'10'/'1'）→ 消费端 `UsageConsumer._as_int` 落库前收敛 int/None |
+| W3 任务 2 冒烟：`session.scalar` 同步调用未 await（coroutine never awaited） | 1 | 冒烟脚本查库改用 `await session.scalar(...)`（async_session 的 scalar 是协程） |

@@ -24,3 +24,11 @@
 
 - **JSON body 无 Decimal 语义**：`client.post(json=...)`（httpx/TestClient）用 stdlib json.dumps 序列化请求体，遇 `Decimal` 抛 `TypeError: Decimal is not JSON serializable`——请求体 price 必须传 float；落库为 Decimal 交给 Pydantic（字段类型 `Decimal` 会把 JSON float 转 Decimal），返回序列化再由端点 `_public_fields` 转 float。三层职责各归各：传输用 float、建模用 Decimal、展示用 float。
 - **SQLAlchemy `Numeric` → SQLite/Postgres 语义**：models 定价字段用 Numeric 存 Decimal，网格成本 `estimate_cost` 全程 Decimal 计算避免浮点误差，仅写回/出网时转 float。
+
+## 技术事实（W3 任务 2：用量事件链路）
+
+- **Redis Stream 是可持久化消息队列偏好的关键**：网关把用量事件 XADD 进 `usage:events`，worker 用消费组（XREADGROUP + XACK）异步落 `usage_records`，事件先落 Redis 再异步入库——把"转发耗时"与"计费落库"解耦（削峰），请求链路不等待 DB 写。
+- **Redis XADD 拒绝 None 字段值**（`DataError: Invalid input of type: 'NoneType'`）：字段值必须为 bytes/str/int/float。可选字段（channel_id/latency_ms）为 None 须在 emit 之前过滤，消费端用 `ev.get()` 缺省兼容——不能把 None 直接塞进 Stream。
+- **`decode_responses=True` 读 Stream 让所有字段值变 str**：worker 建 `aioredis.Redis(..., decode_responses=True)` 后 XREADGROUP 返回的字段值全是 str（`'10'`、`'1'`），直接绑定 int 列报 asyncpg `DataError: 'str' object cannot be interpreted as an integer`——消费端需 `int()` 收敛（None/空串 → None）。Stream 本身天然是"全字节"模型，跨边界一律按 str 处理。
+- **幂等落库的锚点 = `usage_records.request_id`（全局 unique）**：重复事件（同 request_id 线程重发 / 崩溃后 XACK 重放）被 DB unique 约束拒绝，配合消费端"先查已落库集合→跳重"双保险，任意重放零重复行。request_id 在网关每次真实转发分配，缓存回放/失败路径不产生事件（无用 log 污染）。
+- **Celery task 内桥接 async 数据库**：`process_usage_events` 是同步 task 签名，内部 `asyncio.run()` 跑 async 引擎/session（SQLAlchemy async），临时引擎用完 `engine.dispose()`——worker 长驻进程不跨任务持有连接。

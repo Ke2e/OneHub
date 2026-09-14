@@ -1,5 +1,25 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-14（W3 任务 2：用量事件 → Redis Stream → Celery 异步落库达成，116 passed + 真冒烟零重复）
+
+**背景**：W3 任务 2 = 用量事件 → Redis Stream → Celery 异步落库，验收标准"链路通畅"。ADR-0002 已获 Asize 批准（方案 A：Celery，停机点 3 解除），本轮引入 `celery[redis]`。
+
+**做了什么**：
+
+1. `app/services/usage_events.py`：`USAGE_STREAM`/`USAGE_GROUP` 常量 + `build_usage_event` 纯函数（幂等锚点 request_id + 落库字段全集）+ `UsageProducer.emit`（XADD）+ `UsageConsumer.consume`（先查已落库 request_id 集合→幂等跳重→插入→commit，DB unique 兜底零重复）。
+2. `app/workers/billing.py`：Celery app（redis broker/backend）+ `process_usage_events` task（asyncio 桥接 async 引擎/session，失败重试 max_retries=2）+ `read_and_process`（XGROUP_CREATE 幂等建组 → XREADGROUP 拉批 → `UsageConsumer` 幂等落库 → XACK）。
+3. 网关接入：非流式（response.usage 非空）与流式（流尾 usage chunk 解析后）两路径在转发生效后 `emit`；缓存回放/失败不产生事件。lifespan 注入 `usage_producer` 单例（独立 Redis 连接，aclose 配对）。
+4. docker-compose 增 `worker` 服务（复用 api 镜像，`celery -A app.workers.billing:celery_app worker`，depends_on pg+redis）。
+5. 测试：`tests/_fake_usage.py`（FakeUsageProducer）+ `tests/unit/test_usage_events.py`（载荷/发射/消费幂等）+ 网关三条用 FakeUsageProducer 断言的改造。
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **116 passed**（W3 任务 1 末 111 基线 + 5 新增，全绿）
+- **真 Redis+PG 链路冒烟（链路通畅实证）**：向 `usage:events` XADD 11 事件（10 唯一 + 1 重复 request_id）→ `read_and_process` 消费落库 → 对账 `usage_records`：范围行数=10、distinct=10、插入=10（**零重复**）。命令级输出：`[audit] 本次注入范围行数=10（期望 10），去重行数=10（期望 10）→ PASS 零重复`
+- 冒烟暴露并修复两个真实生产缺陷：① XADD 拒绝 None 字段（网关流式 `channel_id` 可 None）→ emit 落流前过滤；② worker `decode_responses=True` 读出全字段为 str → `_as_int` 收敛 int/None
+
+**下一步**：W3 任务 3 并发扣减（乐观锁 + 失败重试，对账脚本，保护清单）。
+
 ## 会话 2026-09-14（W3 任务 1：计费引擎——models 定价表 CRUD + 余额预检达成，111 passed）
 
 **背景**：W3 计费引擎任务 1 = models 定价表 CRUD + 余额预检（Redis，不查库，不足返 402）。Asize 跳过澄清，按推荐默认推进：新增 `InsufficientBalanceError`（402）、预检做成本估算（balance < 预估成本才 402）、P1 本轮跳过并入收尾前统一加固。
