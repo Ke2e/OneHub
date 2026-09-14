@@ -38,37 +38,54 @@ CHANNEL = {
     "weight": 10,
 }
 
+# W4 任务 1：备份渠道（同名模型第二渠道，占位 key，权重更低 → 仅故障时承接）
+CHANNEL_BACKUP = {
+    "name": "deepseek-backup",
+    "provider": "deepseek",
+    "base_url": "https://api.senseaudio.cn/v1",
+    "api_key_encrypted": "env-injected",
+    "weight": 5,
+}
+
+CHANNELS = [CHANNEL, CHANNEL_BACKUP]
+
 MODELS = [
     {"model_name": "deepseek-v4-flash-0731", "channel_id": None},
     {"model_name": "senseaudio-s2", "channel_id": None},
 ]
 
+# 备份渠道挂载的模型变体：与非唯一 model_name 的行并存，构成同一模型的多渠道候选
+BACKUP_MODEL_NAMES = ["deepseek-v4-flash-0731"]
 
-async def _upsert_channel(session: AsyncSession) -> None:
-    """按 name 查重插入/同步渠道；同行已存在则刷新核心字段。"""
+
+async def _upsert_channel(session: AsyncSession, channel: dict) -> int:
+    """按 name 查重插入/同步渠道；同行已存在则刷新核心字段。返回渠道 id。"""
     existing = (
-        await session.execute(select(Channel).where(Channel.name == CHANNEL["name"]))
+        await session.execute(select(Channel).where(Channel.name == channel["name"]))
     ).scalar_one_or_none()
     if existing is None:
-        session.add(Channel(**CHANNEL))
+        session.add(Channel(**channel))
         await session.flush()
-    else:
-        for field, value in CHANNEL.items():
-            if field != "name":
-                setattr(existing, field, value)
+        return (
+            await session.execute(select(Channel).where(Channel.name == channel["name"]))
+        ).scalar_one().id
+    for field, value in channel.items():
+        if field != "name":
+            setattr(existing, field, value)
+    return existing.id
 
 
-async def _upsert_models(session: AsyncSession, channel_id: int) -> None:
-    """按 model_name 查重：无则插入并挂渠道，有则仅同步 channel_id。"""
+async def _upsert_models(session: AsyncSession, channel_ids: dict[str, int]) -> None:
+    """按 (model_name, channel_id) 查重：同模型可挂多渠道（backup 变体），互不影响。"""
     existing = {
-        m.model_name: m
-        for m in (await session.execute(select(Model))).scalars().all()
+        (r.model_name, r.channel_id): r
+        for r in (await session.execute(select(Model))).scalars().all()
     }
-    for m in MODELS:
-        if m["model_name"] not in existing:
-            session.add(Model(model_name=m["model_name"], channel_id=channel_id))
-        else:
-            existing[m["model_name"]].channel_id = channel_id
+    pairs = [(m["model_name"], channel_ids["deepseek-main"]) for m in MODELS]
+    pairs += [(name, channel_ids["deepseek-backup"]) for name in BACKUP_MODEL_NAMES]
+    for name, cid in pairs:
+        if (name, cid) not in existing:
+            session.add(Model(model_name=name, channel_id=cid))
 
 
 async def seed() -> None:
@@ -76,15 +93,13 @@ async def seed() -> None:
     engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
     try:
         async with AsyncSession(engine) as session:
-            await _upsert_channel(session)
-            # flush 后 channel.id 已生成
-            channel_id = (
-                await session.execute(select(Channel).where(Channel.name == CHANNEL["name"]))
-            ).scalar_one().id
-            await _upsert_models(session, channel_id)
+            channel_ids = {
+                c["name"]: await _upsert_channel(session, c) for c in CHANNELS
+            }
+            await _upsert_models(session, channel_ids)
             await session.commit()
-            print(f"[seed] ensured channel={CHANNEL['name']} models="
-                  f"{[m['model_name'] for m in MODELS]}")
+            print(f"[seed] ensured channels={[c['name'] for c in CHANNELS]} "
+                  f"models={[m['model_name'] for m in MODELS]} + backup variants")
     finally:
         await engine.dispose()
 

@@ -16,15 +16,17 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ModelNotFoundError, RateLimitError
+from app.core.errors import ModelNotFoundError, RateLimitError, UpstreamError
 from app.core.security import require_gateway_api_key
-from app.models import ApiKey, Model
+from app.models import ApiKey, Channel, Model
 from app.providers.deepseek import DeepSeekProvider
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
 from app.services.idempotency import IdempotencyOutcome, IdempotencyService
 from app.services.billing import BalanceService, estimate_cost
 from app.services.keys import check_model_whitelist
 from app.services.rate_limit import RateLimiter, estimate_tokens
+from app.services.router import Candidate
+from app.services.smart_router import SmartRouter
 from app.services.usage_events import UsageProducer, build_usage_event
 
 router = APIRouter(prefix="/v1")
@@ -48,6 +50,28 @@ def get_billing(request: Request) -> BalanceService:
 def get_usage_producer(request: Request) -> UsageProducer:
     """用量生产者单例依赖：lifespan 构造（W3 任务 2，XADD usage:events）。"""
     return request.app.state.usage_producer
+
+
+def get_smart_router(request: Request) -> SmartRouter:
+    """智能路由单例依赖：lifespan 构造（W4 任务 1，熔断过滤+加权轮询+退避重试）。"""
+    return request.app.state.smart_router
+
+
+def _provider_for_channel(request: Request, channel: Channel) -> DeepSeekProvider:
+    """渠道 → provider 惰性复用：首次按 base_url/密钥构造（连接池），后续复用。
+
+    app.state.channel_providers 字典缓存（lifespan 初始化、退出统一 aclose）。
+    仅支持 provider=deepseek（当前唯一提供方，基类转发逻辑复用）；密钥沿用
+    渠道表明文占位（W4 计费加密留待 ADR，本任务不改 DDL）。
+    """
+    table: dict[int, DeepSeekProvider] = request.app.state.channel_providers
+    prov = table.get(channel.id)
+    if prov is None:
+        prov = DeepSeekProvider(
+            api_key=channel.api_key_encrypted, base_url=channel.base_url
+        )
+        table[channel.id] = prov
+    return prov
 
 
 async def _stream_events(
@@ -130,6 +154,7 @@ async def chat_completions(
     idempotency: IdempotencyService = Depends(get_idempotency),
     billing: BalanceService = Depends(get_billing),
     usage_producer: UsageProducer = Depends(get_usage_producer),
+    smart_router: SmartRouter = Depends(get_smart_router),
 ) -> ChatCompletionResponse | StreamingResponse:
     """对话端点：非流式返回完整 Chat Completion；流式返回 text/event-stream 逐块直通。"""
 
@@ -138,16 +163,20 @@ async def chat_completions(
     request_id = str(uuid.uuid4())
     started_at = time.monotonic()
 
-    # 1) model 可用性校验（W1 数据源 = models 表 enabled 集合）
+    # 1) model 可用性校验（W1 数据源 = models 表 enabled 集合）。
+    #    W4 同 model_name 可多行 → 之后作为多渠道候选；本处取首行做存在性/定价。
     async with AsyncSession(request.app.state.engine) as session:
-        model = await session.scalar(
-            select(Model).where(
-                Model.model_name == req.model,
-                Model.enabled.is_(True),
+        model_rows = (
+            await session.scalars(
+                select(Model).where(
+                    Model.model_name == req.model,
+                    Model.enabled.is_(True),
+                )
             )
-        )
-    if model is None:
+        ).all()
+    if not model_rows:
         raise ModelNotFoundError()
+    model = model_rows[0]
 
     # 2) key 级模型白名单（W2 任务 2）：白名单非空且不含请求 model → 404（不泄露 key 授权粒度）
     if not check_model_whitelist(api_key, req.model):
@@ -183,19 +212,54 @@ async def chat_completions(
             await idempotency.cancel(api_key.id, idem_key)  # 被 429 挡回，释放占位可重试
         raise RateLimitError(retry_after=1)
 
-    # 5) 渠道实例化：app.state 单例（lifespan 构造，连接池复用，关闭时 aclose）
+    # 5) 渠道候选（W4 任务 1）：同一 model 的所有 enabled 行挂到的渠道 → 候选
+    #    （权重/可用性取自 channel.status）。选中的渠道经 _provider_for_channel 惰性构造 provider。
+    #    有候选走智能路由（熔断过滤 + 加权轮询 + 指数退避重试）；无候选（单渠道旧语义/
+    #    测试桩 channel_id=None）回退 app.state 单例，保持既有行为不变。
     provider: DeepSeekProvider = request.app.state.deepseek_provider
+    channel_map: dict[int, Channel] = {}
+    candidates: list[Candidate] = []
+    wanted_ids = {m.channel_id for m in model_rows if m.channel_id}
+    if wanted_ids:
+        async with AsyncSession(request.app.state.engine) as session:
+            for ch in (await session.scalars(select(Channel))).all():
+                if ch.id in wanted_ids:
+                    channel_map[ch.id] = ch
+        candidates = [
+            Candidate(
+                channel_id=m.channel_id,
+                weight=channel_map[m.channel_id].weight,
+                available=(channel_map[m.channel_id].status == "healthy"),
+            )
+            for m in model_rows
+            if m.channel_id in channel_map
+        ]
 
-    # 6) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底
+    # 6) 透传转发：上游错误映射在 provider 内部完成（T011），统一 OpenAI 错误出口兜底。
+    #    流式仅"首个事件产出前"可重试，故流式走 pick_channel 单次选择（选到即透传，不重试）；
+    #    非流式走 forward 带退避重试，全部候选失败抛 UpstreamError(503)。
     if req.stream:
+        if candidates:
+            chosen = await smart_router.pick_channel(candidates)
+            if chosen is None:
+                raise UpstreamError(
+                    message="all channels unavailable", status_code=503
+                )
+            stream_provider = _provider_for_channel(
+                request, channel_map[chosen.channel_id]
+            )
+            stream_channel_id = chosen.channel_id
+        else:
+            stream_provider = provider
+            stream_channel_id = model.channel_id
         return StreamingResponse(
             _stream_events(
                 limiter,
-                provider,
+                stream_provider,
                 req,
                 usage_producer,
                 api_key,
-                model.channel_id,
+                stream_channel_id,
                 request_id,
                 started_at,
             ),
@@ -205,8 +269,21 @@ async def chat_completions(
                 "X-Accel-Buffering": "no",  # 禁用反向代理缓冲，保证逐块即时下发
             },
         )
+
+    # 非流式：路由转发（有候选走智能路由；无候选回退单渠道）
+    used_channel_id = model.channel_id
     try:
-        response = await provider.chat(req)
+        if candidates:
+            async def _upstream(cid: int):
+                nonlocal used_channel_id
+                used_channel_id = cid
+                return await _provider_for_channel(
+                    request, channel_map[cid]
+                ).chat(req)
+
+            response = await smart_router.forward(candidates, _upstream)
+        else:
+            response = await provider.chat(req)
     except BaseException:
         if idem_key:
             await idempotency.cancel(api_key.id, idem_key)  # 转发失败，撤销占位可重试
@@ -221,7 +298,7 @@ async def chat_completions(
             build_usage_event(
                 request_id=request_id,
                 api_key_id=api_key.id,
-                channel_id=model.channel_id,
+                channel_id=used_channel_id,
                 model=req.model,
                 prompt_tokens=response.usage.prompt_tokens,
                 completion_tokens=response.usage.completion_tokens,

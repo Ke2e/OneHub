@@ -12,8 +12,10 @@ from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.providers.deepseek import DeepSeekProvider
 from app.services.billing import BalanceService
+from app.services.circuit_breaker import CircuitBreaker
 from app.services.idempotency import IdempotencyService
 from app.services.rate_limit import RateLimiter
+from app.services.smart_router import SmartRouter
 from app.services.usage_events import UsageProducer
 
 
@@ -53,6 +55,14 @@ async def lifespan(app: FastAPI):
     app.state.usage_producer = UsageProducer(
         aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
     )
+    # W4 任务 1：三态熔断器（Redis 状态，多 worker 共享）+ 智能路由编排
+    #（熔断过滤 + 加权轮询 + 指数退避重试）。与限流同 redis 连接，多 worker 共享熔断态。
+    app.state.circuit_breaker = CircuitBreaker(
+        aioredis.Redis.from_url(settings.redis_url, decode_responses=True)
+    )
+    app.state.smart_router = SmartRouter(app.state.circuit_breaker)
+    # W4 任务 1：渠道 → provider 惰性缓存（连接池复用；切备共用，关闭时统一释放）
+    app.state.channel_providers: dict[int, DeepSeekProvider] = {}
     try:
         yield
     finally:
@@ -60,7 +70,10 @@ async def lifespan(app: FastAPI):
         await app.state.idempotency.aclose()
         await app.state.billing.aclose()
         await app.state.usage_producer.aclose()
+        await app.state.circuit_breaker.aclose()
         await app.state.deepseek_provider.aclose()
+        for _p in app.state.channel_providers.values():
+            await _p.aclose()
         await engine.dispose()
 
 
