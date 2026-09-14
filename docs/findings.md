@@ -19,3 +19,8 @@
 
 - spec-kit 的 /speckit-specify 规定 [NEEDS CLARIFICATION] 标记最多 3 个；本 feature 用了 4 个（FR-004/005/008/010），已在 spec 内说明理由（Q4 建表范围影响脚手架任务拆分），等 /clarify 统一回收
 - /speckit-clarify 上限 5 问；Asize 要求一次性列出（覆盖"逐问交互"默认流程），等亲自回答
+
+## 技术事实（W3 计费相关）
+
+- **JSON body 无 Decimal 语义**：`client.post(json=...)`（httpx/TestClient）用 stdlib json.dumps 序列化请求体，遇 `Decimal` 抛 `TypeError: Decimal is not JSON serializable`——请求体 price 必须传 float；落库为 Decimal 交给 Pydantic（字段类型 `Decimal` 会把 JSON float 转 Decimal），返回序列化再由端点 `_public_fields` 转 float。三层职责各归各：传输用 float、建模用 Decimal、展示用 float。
+- **SQLAlchemy `Numeric` → SQLite/Postgres 语义**：models 定价字段用 Numeric 存 Decimal，网格成本 `estimate_cost` 全程 Decimal 计算避免浮点误差，仅写回/出网时转 float。

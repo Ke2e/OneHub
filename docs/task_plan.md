@@ -38,7 +38,7 @@
 
 | # | 任务 | 状态 | 验收标准 |
 |---|------|------|---------|
-| 1 | models 定价表 CRUD；余额预检（Redis） | pending | 预检不查库、不足返 402 |
+| 1 | models 定价表 CRUD；余额预检（Redis） | done | 预检不查库、不足返 402 |
 | 2 | 用量事件 → Redis Stream → Celery 异步落库 | pending | 链路通畅 |
 | 3 | 并发扣减：乐观锁 + 失败重试 | pending | 对账脚本通过（PROJECT_CONTEXT 6.3 标准） |
 | 4 | teach 检查点：幂等、事务隔离、并发扣减三方案、削峰 | pending | 讲解通过 |
@@ -78,6 +78,7 @@
 | 2026-09-13 | **W2 任务 3 完成**：提交链 08a58fb（fix test event_loop）→ bf644ff（feat rate-limit）→ b655dcb（test rate-limit），79 passed（58 → 79）；真 Redis 冒烟 5 项 IO 全过（满桶放行/Retry-After ceil/补 token 对拍/4 桶 28 并发恰 20 放行零超发/双维度合并短路） | 下一步任务 4：幂等键（Idempotency-Key，Redis 存储手写，保护清单） |
 | 2026-09-13 | **W2 任务 4 执行期设计（dev-tdd）**：幂等落 `app/services/idempotency.py`——双键设计 `idem:{key_id}:{ik}`（响应缓存，EX=24h 幂等窗口）+ `:claim`（在途占位，EX=30s 兜底崩溃残留）；手写 `IDEMPOTENCY_LUA`（GET 缓存 → GET 占位 → SET 占位 return {status,value}，EVAL 内 read-modify-write 原子防并发双转发）；三态 `cached 回放 / claimed 轮询 / acquired 得主`，CLAIMED 在 `_wait_result` 内消化（得主写缓存→回放 / 占位消失→接管转发 / 超时 5s→409）；端点接入在限流后、转发前，仅非流式生效（流式 SSE 缓存=重放整段事件流成本高收益低，忽略该头）；失败路径（上游抛错 + 槽满 429）一律 `cancel` 释放占位否则后来者永久 409；不校验同 key 不同 body（Stripe 同款假设，信任调用方唯一 key 唯一请求） | 提交链 46105bc(test RED)→3bcbf2e(feat GREEN)→951459e(fix test)；92 passed（79→92）；真 Redis 冒烟 IO 全过（缓存回放/10 并发恰 1 得主/撤销可重试/Lua 语义对拍） |
 | 2026-09-13 | **W2 任务 6 产出**：security-best-practices 审查（docs/security_review_w2.md）——FastAPI 安全规范主动审计，未发现 Critical/High 可利用漏洞；2 项 Medium（/docs 公开暴露、Redis 无认证暴露）+ 6 项 Low/观察（secret_key 默认值守卫、body 无大小上限、无安全响应头、PBKDF2 100k 迭代、JWT TTL 12h、LoginRequest 无下限）；保护清单核查四组件均无注入面。简历初版（docs/resume_draft.md）：W1–W2 成果四块（协议兼容链路 / SK-Key 鉴权 / Redis 限流 / 幂等键）+ 量化证据表，全部数字有命令级证据 | W2 阶段 1-4/6 达成交付；teach 材料已产出待集中自验；下一步进 W3 计费引擎（任务 1 models 定价 + 余额预检） |
+| 2026-09-14 | **W3 任务 1 执行期设计（dev-tdd，Asize 跳过澄清按推荐默认）**：402 走新增 `InsufficientBalanceError`（继承 OpenAIError，status=402 / type=insufficient_quota / code=insufficient_balance，OpenAI 生态支付语义）；余额预检不做超额扣减只做**成本估算**——`estimate_cost(input_price×in_tokens + output_price×out_tokens)`，`balance < 预估成本` 才 402；Redis 缓存余额 `balance:{tenant_id}`（TTL 短缓存），未命中查库回填，命中不查库（满足"预检不查库"验收）；models 定价 CRUD——models 全局表无 tenant，经 require_admin JWT 即管理身份；POST 查重式幂等（表无唯一约束）→409；DELETE 硬删（usage_records.model 为 VARCHAR 非 FK，删安全）；Numeric-Decimal → float 以 JSON 序列化；P1（超额拦截/计费回执）本轮跳过并入收尾前统一加固 | 提交链 feat(test)+docs；111 passed（92→111）；排障：admin_models 首次全量报 Decimal 序列化异常——测试请求体传 Decimal 对象、httpx 序列化 JSON 失败（JSON 本无 Decimal 语义），改传 float 由 Pydantic 落 Decimal；下一步任务 2 用量事件 → Redis Stream → Celery 异步落库 |
 
 ## 遇到的错误
 

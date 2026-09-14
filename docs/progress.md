@@ -1,5 +1,24 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-14（W3 任务 1：计费引擎——models 定价表 CRUD + 余额预检达成，111 passed）
+
+**背景**：W3 计费引擎任务 1 = models 定价表 CRUD + 余额预检（Redis，不查库，不足返 402）。Asize 跳过澄清，按推荐默认推进：新增 `InsufficientBalanceError`（402）、预检做成本估算（balance < 预估成本才 402）、P1 本轮跳过并入收尾前统一加固。
+
+**做了什么**：
+
+1. `InsufficientBalanceError`（app/core/errors.py）：继承 OpenAIError，`status_code=402`、`error_type="insufficient_quota"`、`code="insufficient_balance"`（OpenAI 生态支付语义，配 C278 quota 语义一致性）。
+2. `app/services/billing.py`：`BALANCE_KEY`（Redis 键格式）+ `estimate_cost` 纯函数（`input_price×input_tokens + output_price×output_tokens`，缺省 output pricetokens 用 MAX_OUTPUT_TOKENS 兜底）+ `BalanceService.precheck`——先查 Redis 缓存，未命中查库回填（TTL 短缓存），`balance < cost` 抛 402；lifespan 实例化单例挂 `app.state.billing`。
+3. 网关接入（gateway.chat_completions）：`get_billing` 依赖；在幂等检查后、并发槽获取前调用 `precheck`（估 token 用 messages 长度，成本未命中直接 402 不转发）。
+4. 管理面 models 定价 CRUD（app/api/admin/models.py）：GET 全量清单 / POST 创建（model_name 查重→409）/ PATCH 局部更新 / DELETE 硬删（usage_records.model 为 VARCHAR 非 FK，删安全）；`_public_fields` 将 Numeric-Decimal → float 以 JSON 序列化；schemas 增 `ModelCreate` / `ModelUpdate`（price 字段为 Decimal）。
+
+**验证（dev-verify 证据）**：
+
+- `uv run pytest -q` → **111 passed**（W2 末 92 基线 + 19 新增，全绿；W3 任务 1 用例：billing 单测 + gateway_billing 端点 402/正常流 + admin_models CRUD 8 例）
+- 排障一例：admin_models 首次全量报 `Decimal is not JSON serializable`——非端点 bug，是**测试请求体传了 `Decimal` 对象**，httpx 客户端序列化 JSON body 时失败（JSON 本无 Decimal 语义）；改为请求体传 float、由 Pydantic(Decimal) 落库为 Decimal，断言仍比对 Decimal。
+- 提交链：`<feat security>` + `<test security>` + `<docs>`（见下 git 记录，按 W2 既定 docs(adr)→feat→test→docs 顺序）
+
+**下一步**：W3 任务 2 用量事件 → Redis Stream → Celery 异步落库。
+
 ## 会话 2026-09-13（W2 任务 6：简历上墙点 1 + security-best-practices 审查达成，W2 阶段交付收口）
 
 **背景**：任务 4 完成（92 passed）、任务 5 teach 材料产出。任务 6 目标 = 简历上墙点 1 初版 + security-best-practices 审查报告。
