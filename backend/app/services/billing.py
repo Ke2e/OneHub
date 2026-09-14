@@ -32,8 +32,11 @@ BALANCE_KEY = "bal:{tenant_id}"
 BALANCE_CACHE_TTL = 60
 # 输出 token 未知时的保守估算上限（预检不低估请求成本）
 MAX_OUTPUT_TOKENS = 2048
-# 乐观锁扣减版本冲突重试上限（冲突是瞬态：期间有并发请求已提交，重读即收敛）
-MAX_CHARGE_RETRIES = 5
+# 乐观锁扣减版本冲突重试上限。冲突是瞬态：期间有并发请求已提交，重读最新
+# version 即收敛。生产 worker 并发低（compose concurrency=2，冲突几乎为零）；
+# 上限按对账脚本 50 路真并发验证设计——最坏情况下同波并发者每波仅 1 人读到
+# 未被消费的 version，第 k 个并发者需约 k 次重试，取 100 覆盖 50 并发 + 余量。
+MAX_CHARGE_RETRIES = 100
 
 
 class ChargeConflictError(RuntimeError):
