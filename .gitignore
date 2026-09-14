@@ -17,6 +17,10 @@ htmlcov/
 
 # ===== Node =====
 node_modules/
+dist/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
 
 # ===== IDE / OS =====
 .vscode/

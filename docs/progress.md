@@ -1,5 +1,29 @@
 # OneHub 会话日志（progress）
 
+## 会话 2026-09-14（W4 任务 2：React 管理台 + ECharts 仪表盘 + Playground 达成，191 passed + dogfood 验证）
+
+**背景**：W4 任务 2 = React 管理台 + ECharts 仪表盘 + Playground，验收标准"dogfood 通过"。前端栈经 ADR-0003 批准（React18 + TS + Vite + ECharts）；管理台接口全部挂在 `/api` 前缀，require_admin JWT 鉴权。
+
+**做了什么**：
+
+1. 后端 `app/api/admin/` 补齐三块 + 服务层：
+   - `channels.py`：渠道 CRUD + 熔断实时态（`circuit_breaker.get_state(...)` 只读暴露 state/failure_count/opened_at 供管理台可视化）；删除前引用安全校验（usage_records 有该 channel 即拒）。
+   - `services/dashboard.py` + `dashboard.py`：KPI 聚合（24h 请求量/Token/成本 estimate 口径/活跃渠道）+ 渠道分流按 channel_id 分组 + 用量明细分页，纯 Python 无新增依赖。
+   - `play.py`：Playground 代理 POST `/api/play/chat`，require_admin 鉴权与网关面 sk-key 解耦，转发复用智能路由（候选同 model enabled/href → 熔断过滤 → 加权轮询 → 退避重试 → provider 惰性缓存），流式 SSE 透传 / 非流式 OpenAI 结构，不叠加限流/幂等/余额预检调试语义。
+2. `circuit_breaker.py` 增 `get_state`（只读，不迁移状态）。
+3. 前端 `frontend/`（React18 + TS + Vite + ECharts + HashRouter）：`api.ts` 管理面客户端（JWT 入 localStorage、401 清 token 回登录）；Login / Dashboard（KPI 卡 + 时间控件 + 2ECharts + 数据来源弹窗 + 用量明细表）/ Channels（熔断三态 badge）/ Models / Keys / Playground。`vite.config.ts` proxy `/api` → `http://127.0.0.1:8001`。
+4. 测试：`test_admin_channels.py` / `test_admin_dashboard.py` / `test_admin_play.py`（+ 回归 `__init__.py` 挂载、schemas）。
+
+**验证（dev-verify 证据）**：
+
+- `.\.venv\Scripts\python.exe -m pytest -q` → **191 passed**（168 基线 → 191，全绿）
+- **dogfood（浏览器 + 直连）**：登录经 Vite proxy 200 签发 token（160 字符）→ token 入 localStorage → HashRouter 跳 `#/dashboard`；仪表盘 KPI（24h 请求 60 / Token 2362 / 成本 ¥25.19 / 活跃渠道 2/2）+ 2 个 ECharts canvas 真实渲染 + 用量明细表；渠道页 2 渠道熔断三态（closed/fail=0）+ CRUD；模型定价 4 条（含 backup 渠道同名变体）；API Keys 空态正确；Playground 模型下拉（4 模型）+ 流式开关注入。前端 `npm run build`（tsc -b && vite build）通过（仅 ECharts 1.2MB 体积警告，非错误）。
+- **dogfood 环境限制记录**：浏览器视口 innerHeight=0 致坐标点击无效（元素全 offscreen、无请求发出）→ 改用 DOM `button.click()` 驱动 React 提交走通登录；各页面渲染验证用 navigate 到 hash 路由 + 读取 innerText / canvas 计数。真实浏览器正常视口下交互不受影响（环境限制，非应用 bug）。
+
+**提交链**：feat(admin: channels/dashboard/play + circuit_breaker get_state) + test(admin) + chore(frontend) + docs（待 Asize 确认后提交）
+
+**下一步**：W4 任务 3 Locust 压测（200 并发流式 5min，错误率 <1%，记 P95）。
+
 ## 会话 2026-09-14（W4 任务 1：智能路由 + 三态熔断达成，168 passed + 端到端冒烟验收）
 
 **背景**：W4 任务 1 = 加权轮询 + 指数退避重试（含抖动）+ 三态熔断器，验收"封主渠道自动切备、恢复切回"。三态熔断器属保护清单，手写 Redis Lua；加权轮询/指数退避非保护清单但手写保简历叙事。无 DDL/新外部依赖，不触发停机点 3。

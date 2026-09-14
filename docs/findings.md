@@ -51,3 +51,11 @@
 - **熔断记成功/失败去驱动状态机**：`record_success`（HALF_OPEN 探测成功 → 重开 CLOSED、清零计数）/ `record_failure`（计数+超阈值 → OPEN 记 opened_at）。CLOSED 时计数放行但失败累计，避免"每次失败都直接开断"。
 - **provider 按渠道惰性构造缓存**：`_provider_for_channel(channel)` 首建 `DeepSeekProvider(base_url=channel.base_url, api_key=channel.api_key_encrypted)` 入 `app.state.channel_providers`（连接池复用），lifespan 关闭统一 aclose。密钥沿用渠道表明文占位（W4 加密走 ADR，不本任务做）。
 - **单渠道回退保兼容**：候选为空（model.channel_id=None/测试桩）时回退 `app.state.deepseek_provider` 单例，既有单渠道语义与 126 基线上所有网关测试零改动通过。
+
+## 技术事实（W4 任务 2：React 管理台 + Vite proxy）
+
+- **Vite 配置文件加载优先级会坑人**：`vite.config.ts` 与 `vite.config.js` 同时存在时，Vite 优先加载 **`.js`**（旧编译遗留物默认 target=8000 正式容器），`.ts` 里改 target 不生效 → dev proxy `/api/**` 转发到"未挂管理台路由"的 8000 返回 `{"detail":"Not Found"}`，直连 8001 却是 200。排查用 `DEBUG=vite:proxy` 起 vite 看 `vite:proxy /api/... -> http://127.0.0.1:8000` 立刻暴露真实目标。解法：删除遗留 `vite.config.js`，只保留 `.ts`。
+- **管理台接口统一挂 `/api` 前缀 + require_admin JWT**：与网关面 sk-key 鉴权完全解耦——管理面 POST `/api/auth/login` 签 JWT，`require_admin` 校验 Bearer；前端 `api.ts` 把 token 存 `localStorage`（`onehub_admin_token`），请求头 `Authorization: Bearer`，401 清 token 回登录页。
+- **熔断实时态只读暴露**：`CircuitBreaker.get_state(channel_id)` 只 `HGETALL` 读 Redis 不迁移任何状态——管理台可视化熔断三态用，避免"看仪表盘就改变熔断状态"的副作用。
+- **Playground 代理复用智能路由非重复造链**：`/api/play/chat` 的候选收集/熔断过滤/加权轮询/退避重试/provider 惰性缓存全部走 `smart_router` + `_provider_for_channel`，仅换鉴权边界（JWT 而非 sk-key），不叠加限流/幂等/余额预检（调试语义）。
+- **Playground 模型来源多行语义**：Playground 模型下拉取 `models` enabled 集合；同 model 名多行（主/备渠道各挂同名模型）在转发时都会成为候选——前端展示去重、后端按渠道候选转发，两处语义一致。
